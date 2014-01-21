@@ -2236,10 +2236,11 @@ public class DropboxAPI<SESS_T extends Session> {
      *         only catch this exception which signals that some kind of error
      *         occurred.
      */
-    public DeltaPage<Entry> delta(String cursor) throws DropboxException {
+    public DeltaPage<Entry> delta(String cursor, String pathPrefix) throws DropboxException {
         String[] params = new String[] {
             "cursor", cursor,
             "locale", session.getLocale().toString(),
+            "path_prefix", pathPrefix
         };
 
         Object json = RESTUtility.request(RequestMethod.POST,
