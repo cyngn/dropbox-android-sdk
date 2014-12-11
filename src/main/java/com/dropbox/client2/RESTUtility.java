@@ -40,6 +40,7 @@ import java.util.Scanner;
 
 import javax.net.ssl.SSLException;
 
+
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpHost;
@@ -63,6 +64,7 @@ import com.dropbox.client2.DropboxAPI.RequestAndResponse;
 import com.dropbox.client2.exception.DropboxException;
 import com.dropbox.client2.exception.DropboxIOException;
 import com.dropbox.client2.exception.DropboxParseException;
+import com.dropbox.client2.exception.DropboxProxyChangeException;
 import com.dropbox.client2.exception.DropboxSSLException;
 import com.dropbox.client2.exception.DropboxServerException;
 import com.dropbox.client2.exception.DropboxUnlinkedException;
@@ -156,8 +158,8 @@ public class RESTUtility {
     static public RequestAndResponse streamRequest(RequestMethod method,
             String host, String path, int apiVersion, String params[],
             Session session) throws DropboxException {
-        HttpUriRequest req = null;
-        String target = null;
+        HttpUriRequest req;
+        String target;
 
         if (method == RequestMethod.GET) {
             target = buildURL(host, apiVersion, path, params);
@@ -373,7 +375,7 @@ public class RESTUtility {
 
         try {
             HttpResponse response = null;
-            for (int retries = 0; response == null && retries < 5; retries++) {
+            for (int retries = 0; retries < 5; retries++) {
                 /*
                  * The try/catch is a workaround for a bug in the HttpClient
                  * libraries. It should be returning null instead when an
@@ -387,16 +389,18 @@ public class RESTUtility {
                     // Leave 'response' as null.  This is handled below.
                 }
 
+                if (response != null) break;
+
                 /*
                  * We've potentially connected to a different network, but are
                  * still using the old proxy settings. Refresh proxy settings
                  * so that we can retry this request.
                  */
-                if (response == null) {
-                    updateClientProxy(client, session);
-                }
+                updateClientProxy(client, session);
 
-                if (!repeatable) break;
+                if (!repeatable) {
+                    throw new DropboxProxyChangeException();
+                }
             }
 
             if (response == null) {
@@ -541,7 +545,6 @@ public class RESTUtility {
                     + URLEncoder.encode(params[i + 1], "UTF-8");
                 }
             }
-            result.replace("*", "%2A");
         } catch (UnsupportedEncodingException e) {
             return null;
         }

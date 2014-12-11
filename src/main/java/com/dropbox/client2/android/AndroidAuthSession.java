@@ -21,7 +21,7 @@ import com.dropbox.client2.session.AppKeyPair;
  * AndroidAuthSession session = new AndroidAuthSession(myAppKeys, myAccessType);
  *
  * // When user wants to link to Dropbox, within an activity:
- * session.startAuthentication(this);
+ * session.startOAuth2Authentication(this);
  *
  * // When user returns to your activity, after authentication:
  * if (session.authenticationSuccessful()) {
@@ -49,6 +49,8 @@ public class AndroidAuthSession extends AbstractSession {
      * Creates a new session to authenticate Android apps with the given app
      * key pair and access type. The session will not be linked because it has
      * no access token or secret.
+     *
+     * @deprecated {@code AccessType} is unnecessary.
      */
     public AndroidAuthSession(AppKeyPair appKeyPair, AccessType type) {
         super(appKeyPair, type);
@@ -58,10 +60,39 @@ public class AndroidAuthSession extends AbstractSession {
      * Creates a new session to authenticate Android apps with the given app
      * key pair and access type. The session will be linked to the account
      * corresponding to the given access token pair.
+     *
+     * @deprecated {@code AccessType} is unnecessary.
      */
     public AndroidAuthSession(AppKeyPair appKeyPair, AccessType type,
-            AccessTokenPair accessTokenPair) {
+                              AccessTokenPair accessTokenPair) {
         super(appKeyPair, type, accessTokenPair);
+    }
+
+    /**
+     * Creates a new session to authenticate Android apps with the given app
+     * key pair. The session will not be linked because it has no access token
+     * or secret.
+     */
+    public AndroidAuthSession(AppKeyPair appKeyPair) {
+        super(appKeyPair);
+    }
+
+    /**
+     * Creates a new session to authenticate Android apps with the given app
+     * key pair and access type. The session will be linked to the account
+     * corresponding to the given OAuth 1 access token pair.
+     */
+    public AndroidAuthSession(AppKeyPair appKeyPair, AccessTokenPair accessTokenPair) {
+        super(appKeyPair, accessTokenPair);
+    }
+
+    /**
+     * Creates a new session to authenticate Android apps with the given app
+     * key pair and access type. The session will be linked to the account
+     * corresponding to the given OAuth 2 access token.
+     */
+    public AndroidAuthSession(AppKeyPair appKeyPair, String oauth2AccessToken) {
+        super(appKeyPair, oauth2AccessToken);
     }
 
     /**
@@ -79,6 +110,41 @@ public class AndroidAuthSession extends AbstractSession {
      *         AuthActivity in your manifest, meaning that the Dropbox app will
      *         not be able to redirect back to your app after auth.
      */
+    public void startOAuth2Authentication(Context context) {
+        AppKeyPair appKeyPair = getAppKeyPair();
+        if (!AuthActivity.checkAppBeforeAuth(context, appKeyPair.key, true /*alertUser*/)) {
+            return;
+        }
+
+        // Start Dropbox auth activity.
+        AuthActivity.setAuthParams(appKeyPair.key, null);
+        Intent intent = new Intent(context, AuthActivity.class);
+        if (!(context instanceof Activity)) {
+            // If starting the intent outside of an Activity, must include
+            // this. See startActivity(). Otherwise, we prefer to stay in
+            // the same task.
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        }
+        context.startActivity(intent);
+    }
+
+    /**
+     * Starts the Dropbox authentication process by launching an external app
+     * (either the Dropbox app if available or a web browser) where the user
+     * will log in and allow your app access.
+     *
+     * @param context the {@link Context} which to use to launch the
+     *         Dropbox authentication activity. This will typically be an
+     *         {@link Activity} and the user will be taken back to that
+     *         activity after authentication is complete (i.e., your activity
+     *         will receive an {@code onResume()}).
+     *
+     * @throws IllegalStateException if you have not correctly set up the
+     *         AuthActivity in your manifest, meaning that the Dropbox app will
+     *         not be able to redirect back to your app after auth.
+     *
+     * @deprecated Use {@link #startOAuth2Authentication}
+     */
     public void startAuthentication(Context context) {
         AppKeyPair appKeyPair = getAppKeyPair();
         if (!AuthActivity.checkAppBeforeAuth(context, appKeyPair.key, true /*alertUser*/)) {
@@ -86,11 +152,8 @@ public class AndroidAuthSession extends AbstractSession {
         }
 
         // Start Dropbox auth activity.
+        AuthActivity.setAuthParams(appKeyPair.key, appKeyPair.secret);
         Intent intent = new Intent(context, AuthActivity.class);
-        intent.putExtra(AuthActivity.EXTRA_INTERNAL_APP_KEY,
-                appKeyPair.key);
-        intent.putExtra(AuthActivity.EXTRA_INTERNAL_APP_SECRET,
-                appKeyPair.secret);
         if (!(context instanceof Activity)) {
             // If starting the intent outside of an Activity, must include
             // this. See startActivity(). Otherwise, we prefer to stay in
@@ -128,7 +191,7 @@ public class AndroidAuthSession extends AbstractSession {
     /**
      * Sets up a user's access token and secret in this session when you return
      * to your activity from the Dropbox authentication process. Should be
-     * called from your activity's {@code onActivityResult()} method, but only
+     * called from your activity's {@code onResume()} method, but only
      * after checking that {@link #authenticationSuccessful()} is {@code true}.
      *
      * @return the authenticated user's Dropbox UID.
@@ -144,18 +207,30 @@ public class AndroidAuthSession extends AbstractSession {
         }
 
         String token = data.getStringExtra(AuthActivity.EXTRA_ACCESS_TOKEN);
-        String secret = data.getStringExtra(AuthActivity.EXTRA_ACCESS_SECRET);
-        String uid = data.getStringExtra(AuthActivity.EXTRA_UID);
-
-        if (token != null && !token.equals("") &&
-                secret != null && !secret.equals("") &&
-                uid != null && !uid.equals("")) {
-            AccessTokenPair tokens = new AccessTokenPair(token, secret);
-            setAccessTokenPair(tokens);
-            return uid;
+        if (token == null || token.length() == 0) {
+            throw new IllegalArgumentException("Invalid result intent passed in. " +
+                    "Missing access token.");
         }
 
-        throw new IllegalStateException();
+        String secret = data.getStringExtra(AuthActivity.EXTRA_ACCESS_SECRET);
+        if (secret == null || secret.length() == 0) {
+            throw new IllegalArgumentException("Invalid result intent passed in. " +
+                    "Missing access secret.");
+        }
+
+        String uid = data.getStringExtra(AuthActivity.EXTRA_UID);
+        if (uid == null || uid.length() == 0) {
+            throw new IllegalArgumentException("Invalid result intent passed in. " +
+                    "Missing uid.");
+        }
+
+        if (token.equals("oauth2:")) {
+            setOAuth2AccessToken(secret);
+        } else {
+            setAccessTokenPair(new AccessTokenPair(token, secret));
+        }
+
+        return uid;
     }
 
     @Override

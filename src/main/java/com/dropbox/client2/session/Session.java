@@ -118,7 +118,7 @@ public interface Session {
     public String getWebServer();
 
     public enum AccessType {
-        DROPBOX("dropbox"), APP_FOLDER("sandbox");
+        DROPBOX("dropbox"), APP_FOLDER("sandbox"), AUTO("auto");
 
         private final String urlPart;
 

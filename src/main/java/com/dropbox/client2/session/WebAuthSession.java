@@ -82,6 +82,10 @@ public class WebAuthSession extends AbstractSession {
      * Creates a new web auth session with the given app key pair and access
      * type. The session will not be linked because it has no access token or
      * secret.
+     *
+     * @deprecated
+     *    You don't need to specify the access type anymore.  Use
+     *    {@link #WebAuthSession(AppKeyPair)}.
      */
     public WebAuthSession(AppKeyPair appKeyPair, AccessType type) {
         super(appKeyPair, type);
@@ -90,11 +94,33 @@ public class WebAuthSession extends AbstractSession {
     /**
      * Creates a new web auth session with the given app key pair and access
      * type. The session will be linked to the account corresponding to the
-     * given access token pair.
+     * given OAuth 1 access token pair.
+     *
+     * @deprecated
+     *    You don't need to specify the access type anymore.  Use
+     *    {@link #WebAuthSession(AppKeyPair, AccessTokenPair)}.
      */
     public WebAuthSession(AppKeyPair appKeyPair, AccessType type,
             AccessTokenPair accessTokenPair) {
         super(appKeyPair, type, accessTokenPair);
+    }
+
+    /**
+     * Creates a new web auth session with the given app key pair.
+     * The session will not be linked because it has no access token or
+     * secret.
+     */
+    public WebAuthSession(AppKeyPair appKeyPair) {
+        super(appKeyPair);
+    }
+
+    /**
+     * Creates a new web auth session with the given app key pair.
+     * The session will be linked to the account corresponding to the
+     * given access token pair.
+     */
+    public WebAuthSession(AppKeyPair appKeyPair, AccessTokenPair accessTokenPair) {
+        super(appKeyPair, accessTokenPair);
     }
 
     /**

@@ -38,6 +38,7 @@ import android.content.SharedPreferences.Editor;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
@@ -52,8 +53,6 @@ import com.dropbox.client2.android.AndroidAuthSession;
 import com.dropbox.client2.android.AuthActivity;
 import com.dropbox.client2.session.AccessTokenPair;
 import com.dropbox.client2.session.AppKeyPair;
-import com.dropbox.client2.session.Session.AccessType;
-import com.dropbox.client2.session.TokenPair;
 
 
 public class DBRoulette extends Activity {
@@ -67,22 +66,19 @@ public class DBRoulette extends Activity {
     // Note that this is a really insecure way to do this, and you shouldn't
     // ship code which contains your key & secret in such an obvious way.
     // Obfuscation is good.
-    final static private String APP_KEY = "CHANGE_ME";
-    final static private String APP_SECRET = "CHANGE_ME_SECRET";
-
-    // If you'd like to change the access type to the full Dropbox instead of
-    // an app folder, change this value.
-    final static private AccessType ACCESS_TYPE = AccessType.APP_FOLDER;
+    private static final String APP_KEY = "CHANGE_ME";
+    private static final String APP_SECRET = "CHANGE_ME_SECRET";
 
     ///////////////////////////////////////////////////////////////////////////
     //                      End app-specific settings.                       //
     ///////////////////////////////////////////////////////////////////////////
 
     // You don't need to change these, leave them alone.
-    final static private String ACCOUNT_PREFS_NAME = "prefs";
-    final static private String ACCESS_KEY_NAME = "ACCESS_KEY";
-    final static private String ACCESS_SECRET_NAME = "ACCESS_SECRET";
+    private static final String ACCOUNT_PREFS_NAME = "prefs";
+    private static final String ACCESS_KEY_NAME = "ACCESS_KEY";
+    private static final String ACCESS_SECRET_NAME = "ACCESS_SECRET";
 
+    private static final boolean USE_OAUTH1 = false;
 
     DropboxAPI<AndroidAuthSession> mApi;
 
@@ -98,7 +94,7 @@ public class DBRoulette extends Activity {
 
     private final String PHOTO_DIR = "/Photos/";
 
-    final static private int NEW_PICTURE = 1;
+    private static final int NEW_PICTURE = 1;
     private String mCameraFileName;
 
     @Override
@@ -127,7 +123,11 @@ public class DBRoulette extends Activity {
                     logOut();
                 } else {
                     // Start the remote authentication
-                    mApi.getSession().startAuthentication(DBRoulette.this);
+                    if (USE_OAUTH1) {
+                        mApi.getSession().startAuthentication(DBRoulette.this);
+                    } else {
+                        mApi.getSession().startOAuth2Authentication(DBRoulette.this);
+                    }
                 }
             }
         });
@@ -154,7 +154,7 @@ public class DBRoulette extends Activity {
                 DateFormat df = new SimpleDateFormat("yyyy-MM-dd-kk-mm-ss");
 
                 String newPicFile = df.format(date) + ".jpg";
-                String outPath = "/sdcard/" + newPicFile;
+                String outPath = new File(Environment.getExternalStorageDirectory(), newPicFile).getPath();
                 File outFile = new File(outPath);
 
                 mCameraFileName = outFile.toString();
@@ -205,8 +205,7 @@ public class DBRoulette extends Activity {
                 session.finishAuthentication();
 
                 // Store it locally in our app for later use
-                TokenPair tokens = session.getAccessTokenPair();
-                storeKeys(tokens.key, tokens.secret);
+                storeAuth(session);
                 setLoggedIn(true);
             } catch (IllegalStateException e) {
                 showToast("Couldn't authenticate with Dropbox:" + e.getLocalizedMessage());
@@ -299,20 +298,19 @@ public class DBRoulette extends Activity {
      * Shows keeping the access keys returned from Trusted Authenticator in a local
      * store, rather than storing user name & password, and re-authenticating each
      * time (which is not to be done, ever).
-     *
-     * @return Array of [access_key, access_secret], or null if none stored
      */
-    private String[] getKeys() {
+    private void loadAuth(AndroidAuthSession session) {
         SharedPreferences prefs = getSharedPreferences(ACCOUNT_PREFS_NAME, 0);
         String key = prefs.getString(ACCESS_KEY_NAME, null);
         String secret = prefs.getString(ACCESS_SECRET_NAME, null);
-        if (key != null && secret != null) {
-        	String[] ret = new String[2];
-        	ret[0] = key;
-        	ret[1] = secret;
-        	return ret;
+        if (key == null || secret == null || key.length() == 0 || secret.length() == 0) return;
+
+        if (key.equals("oauth2:")) {
+            // If the key is set to "oauth2:", then we can assume the token is for OAuth 2.
+            session.setOAuth2AccessToken(secret);
         } else {
-        	return null;
+            // Still support using old OAuth 1 tokens.
+            session.setAccessTokenPair(new AccessTokenPair(key, secret));
         }
     }
 
@@ -321,13 +319,28 @@ public class DBRoulette extends Activity {
      * store, rather than storing user name & password, and re-authenticating each
      * time (which is not to be done, ever).
      */
-    private void storeKeys(String key, String secret) {
-        // Save the access key for later
-        SharedPreferences prefs = getSharedPreferences(ACCOUNT_PREFS_NAME, 0);
-        Editor edit = prefs.edit();
-        edit.putString(ACCESS_KEY_NAME, key);
-        edit.putString(ACCESS_SECRET_NAME, secret);
-        edit.commit();
+    private void storeAuth(AndroidAuthSession session) {
+        // Store the OAuth 2 access token, if there is one.
+        String oauth2AccessToken = session.getOAuth2AccessToken();
+        if (oauth2AccessToken != null) {
+            SharedPreferences prefs = getSharedPreferences(ACCOUNT_PREFS_NAME, 0);
+            Editor edit = prefs.edit();
+            edit.putString(ACCESS_KEY_NAME, "oauth2:");
+            edit.putString(ACCESS_SECRET_NAME, oauth2AccessToken);
+            edit.commit();
+            return;
+        }
+        // Store the OAuth 1 access token, if there is one.  This is only necessary if
+        // you're still using OAuth 1.
+        AccessTokenPair oauth1AccessToken = session.getAccessTokenPair();
+        if (oauth1AccessToken != null) {
+            SharedPreferences prefs = getSharedPreferences(ACCOUNT_PREFS_NAME, 0);
+            Editor edit = prefs.edit();
+            edit.putString(ACCESS_KEY_NAME, oauth1AccessToken.key);
+            edit.putString(ACCESS_SECRET_NAME, oauth1AccessToken.secret);
+            edit.commit();
+            return;
+        }
     }
 
     private void clearKeys() {
@@ -339,16 +352,9 @@ public class DBRoulette extends Activity {
 
     private AndroidAuthSession buildSession() {
         AppKeyPair appKeyPair = new AppKeyPair(APP_KEY, APP_SECRET);
-        AndroidAuthSession session;
 
-        String[] stored = getKeys();
-        if (stored != null) {
-            AccessTokenPair accessToken = new AccessTokenPair(stored[0], stored[1]);
-            session = new AndroidAuthSession(appKeyPair, ACCESS_TYPE, accessToken);
-        } else {
-            session = new AndroidAuthSession(appKeyPair, ACCESS_TYPE);
-        }
-
+        AndroidAuthSession session = new AndroidAuthSession(appKeyPair);
+        loadAuth(session);
         return session;
     }
 }

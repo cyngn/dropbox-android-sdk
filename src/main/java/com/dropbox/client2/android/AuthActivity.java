@@ -107,28 +107,75 @@ public class AuthActivity extends Activity {
      */
     public static final String AUTH_PATH_CONNECT = "/connect";
 
-    // For communication between AndroidAuthSession and this activity.
-    /*package*/ static final String EXTRA_INTERNAL_APP_KEY = "EXTRA_INTERNAL_APP_KEY";
-    /*package*/ static final String EXTRA_INTERNAL_APP_SECRET = "EXTRA_INTERNAL_APP_SECRET";
-    /*package*/ static final String EXTRA_INTERNAL_WEB_HOST = "EXTRA_INTERNAL_WEB_HOST";
-    /*package*/ static final String EXTRA_INTERNAL_API_TYPE = "EXTRA_INTERNAL_API_TYPE";
-
     private static final String DEFAULT_WEB_HOST = "www.dropbox.com";
+
+    // saved instance state keys
+    private static final String SIS_KEY_AUTH_STATE_NONCE = "SIS_KEY_AUTH_STATE_NONCE";
+
+    /**
+     * Provider of the local security needs of an AuthActivity.
+     *
+     * <p>
+     * You shouldn't need to use this class directly in your app.  Instead,
+     * simply configure {@code java.security}'s providers to match your preferences.
+     * </p>
+     */
+    public interface SecurityProvider {
+        /**
+         * Gets a SecureRandom implementation for use during authentication.
+         */
+        SecureRandom getSecureRandom();
+    }
+
+    // Class-level state used to replace the default SecureRandom implementation
+    // if desired.
+    private static SecurityProvider sSecurityProvider = new SecurityProvider() {
+        @Override
+        public SecureRandom getSecureRandom() {
+            return new SecureRandom();
+        }
+    };
+    private static final Object sSecurityProviderLock = new Object();
 
     /** Used internally. */
     public static Intent result = null;
 
-    private String appKey;
-    private String appSecret;
-    private String webHost;
-    private String apiType;
+    // Temporary storage for parameters before Activity is created
+    private static String sAppKey;
+    private static String sAppSecret;
+    private static String sWebHost = DEFAULT_WEB_HOST;
+    private static String sApiType;
+
+    // These instance variables need not be stored in savedInstanceState as onNewIntent()
+    // does not read them.
+    private String mAppKey;
+    private String mAppSecret;
+    private String mWebHost;
+    private String mApiType;
 
     // Stored in savedInstanceState to track an ongoing auth attempt, which
     // must include a locally-generated nonce in the response.
-    private String authStateNonce = null;
+    private String mAuthStateNonce = null;
 
     /**
-     * Create an intent which can be sent to this activity to start authentication.
+     * Set static authentication parameters
+     */
+    static void setAuthParams(String appKey, String appSecret) {
+        setAuthParams(appKey, appSecret, null, null);
+    }
+
+    /**
+     * Set static authentication parameters
+     */
+    static void setAuthParams(String appKey, String appSecret, String webHost, String apiType) {
+        sAppKey = appKey;
+        sAppSecret = appSecret;
+        sWebHost = (webHost != null) ? webHost : DEFAULT_WEB_HOST;
+        sApiType = apiType;
+    }
+
+    /**
+     * Create an intent which can be sent to this activity to start OAuth 1 authentication.
      *
      * @param context the source context
      * @param appKey the consumer key for the app
@@ -138,15 +185,33 @@ public class AuthActivity extends Activity {
      *  the default
      *
      * @return a newly created intent.
+     *
+     * @deprecated Use {@link #makeOAuth2Intent}
      */
     public static Intent makeIntent(Context context, String appKey, String appSecret,
-            String webHost, String apiType) {
-        Intent intent = new Intent(context, AuthActivity.class);
-        intent.putExtra(AuthActivity.EXTRA_INTERNAL_APP_KEY, appKey);
-        intent.putExtra(AuthActivity.EXTRA_INTERNAL_APP_SECRET, appSecret);
-        intent.putExtra(AuthActivity.EXTRA_INTERNAL_WEB_HOST, webHost);
-        intent.putExtra(AuthActivity.EXTRA_INTERNAL_API_TYPE, apiType);
-        return intent;
+                                    String webHost, String apiType) {
+        if (appKey == null) throw new IllegalArgumentException("'appKey' can't be null");
+        if (appSecret == null) throw new IllegalArgumentException("'appSecret' can't be null");
+        setAuthParams(appKey, appSecret, webHost, apiType);
+        return new Intent(context, AuthActivity.class);
+    }
+
+    /**
+     * Create an intent which can be sent to this activity to start OAuth 2 authentication.
+     *
+     * @param context the source context
+     * @param appKey the consumer key for the app
+     * @param webHost the host to use for web authentication, or null for the default
+     * @param apiType an identifier for the type of API being supported, or null for
+     *  the default
+     *
+     * @return a newly created intent.
+     */
+    public static Intent makeOAuth2Intent(Context context, String appKey, String webHost,
+                                          String apiType) {
+        if (appKey == null) throw new IllegalArgumentException("'appKey' can't be null");
+        setAuthParams(appKey, null, webHost, apiType);
+        return new Intent(context, AuthActivity.class);
     }
 
     /**
@@ -182,7 +247,7 @@ public class AuthActivity extends Activity {
                 builder.setTitle("Security alert");
                 builder.setMessage("Another app on your phone may be trying to " +
                         "pose as the app you are currently using. The malicious " +
-                        "app cannot access your account, but linking to Dropbox " +
+                        "app can't access your account, but linking to Dropbox " +
                         "has been disabled as a precaution. Please contact " +
                         "support@dropbox.com.");
                 builder.setPositiveButton("OK", new OnClickListener() {
@@ -202,8 +267,9 @@ public class AuthActivity extends Activity {
             // Just one activity registered for the URI scheme. Now make sure
             // it's within the same package so when we return from web auth
             // we're going back to this app and not some other app.
-            String authPackage = activities.get(0).activityInfo.packageName;
-            if (!context.getPackageName().equals(authPackage)) {
+            ResolveInfo resolveInfo = activities.get(0);
+            if (null == resolveInfo || null == resolveInfo.activityInfo
+                    || !context.getPackageName().equals(resolveInfo.activityInfo.packageName)) {
                 throw new IllegalStateException("There must be a " +
                         AuthActivity.class.getName() + " within your app's package " +
                         "registered for your URI scheme (" + scheme + "). However, " +
@@ -219,24 +285,52 @@ public class AuthActivity extends Activity {
         return true;
     }
 
+    /**
+     * Sets the SecurityProvider interface to use for all AuthActivity instances.
+     * If set to null (or never set at all), default {@code java.security} providers
+     * will be used instead.
+     *
+     * <p>
+     * You shouldn't need to use this method directly in your app.  Instead,
+     * simply configure {@code java.security}'s providers to match your preferences.
+     * </p>
+     *
+     * @param prov the new {@code SecurityProvider} interface.
+     */
+    public static void setSecurityProvider(SecurityProvider prov) {
+        synchronized (sSecurityProviderLock) {
+            sSecurityProvider = prov;
+        }
+    }
+
+    private static SecurityProvider getSecurityProvider() {
+        synchronized (sSecurityProviderLock) {
+            return sSecurityProvider;
+        }
+    }
+
+    private static SecureRandom getSecureRandom() {
+        SecurityProvider prov = getSecurityProvider();
+        if (null != prov) {
+            return prov.getSecureRandom();
+        }
+        return new SecureRandom();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         if (savedInstanceState == null) {
             result = null;
-            authStateNonce = null;
+            mAuthStateNonce = null;
+            mAppKey = sAppKey;
+            mAppSecret = sAppSecret;
+            mWebHost = sWebHost;
+            mApiType = sApiType;
         } else {
-            authStateNonce = savedInstanceState.getString("authStateNonce");
+            mAuthStateNonce = savedInstanceState.getString(SIS_KEY_AUTH_STATE_NONCE);
         }
 
-        Intent intent = getIntent();
-        appKey = intent.getStringExtra(EXTRA_INTERNAL_APP_KEY);
-        appSecret = intent.getStringExtra(EXTRA_INTERNAL_APP_SECRET);
-        webHost = intent.getStringExtra(EXTRA_INTERNAL_WEB_HOST);
-        if (null == webHost) {
-            webHost = DEFAULT_WEB_HOST;
-        }
-        apiType = intent.getStringExtra(EXTRA_INTERNAL_API_TYPE);
-
+        setAuthParams(null, null);
         setTheme(android.R.style.Theme_Translucent_NoTitleBar);
 
         super.onCreate(savedInstanceState);
@@ -245,7 +339,7 @@ public class AuthActivity extends Activity {
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
-        outState.putString("authStateNonce", authStateNonce);
+        outState.putString(SIS_KEY_AUTH_STATE_NONCE, mAuthStateNonce);
     }
 
     @Override
@@ -256,7 +350,7 @@ public class AuthActivity extends Activity {
             return;
         }
 
-        if (authStateNonce != null || appKey == null || appSecret == null) {
+        if (mAuthStateNonce != null || mAppKey == null) {
             // We somehow returned to this activity without being forwarded
             // here by the official app. Most likely caused by improper setup,
             // but could have other reasons if Android is acting up and killing
@@ -276,7 +370,7 @@ public class AuthActivity extends Activity {
         Intent officialIntent = new Intent();
         officialIntent.setPackage("com.dropbox.android");
         officialIntent.setAction(ACTION_AUTHENTICATE_V2);
-        officialIntent.putExtra(EXTRA_CONSUMER_KEY, appKey);
+        officialIntent.putExtra(EXTRA_CONSUMER_KEY, mAppKey);
         officialIntent.putExtra(EXTRA_CONSUMER_SIG, getConsumerSig());
         officialIntent.putExtra(EXTRA_CALLING_PACKAGE, getPackageName());
         officialIntent.putExtra(EXTRA_CALLING_CLASS, getClass().getName());
@@ -291,13 +385,13 @@ public class AuthActivity extends Activity {
 
         // Save state that indicates we started a request, only after
         // we started one successfully.
-        authStateNonce = state;
+        mAuthStateNonce = state;
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         // Reject attempt to finish authentication if we never started (nonce=null)
-        if (null == authStateNonce) {
+        if (null == mAuthStateNonce) {
             authFinished(null);
             return;
         }
@@ -328,12 +422,12 @@ public class AuthActivity extends Activity {
 
         Intent newResult;
         if (token != null && !token.equals("") &&
-                secret != null && !secret.equals("") &&
+                (secret == null || !secret.equals("")) &&
                 uid != null && !uid.equals("") &&
                 state != null && !state.equals("")) {
             // Reject attempt to link if the nonce in the auth state doesn't match,
             // or if we never asked for auth at all.
-            if (!authStateNonce.equals(state)) {
+            if (!mAuthStateNonce.equals(state)) {
                 authFinished(null);
                 return;
             }
@@ -353,18 +447,20 @@ public class AuthActivity extends Activity {
 
     private void authFinished(Intent authResult) {
         result = authResult;
-        authStateNonce = null;
+        mAuthStateNonce = null;
         finish();
     }
 
     private String getConsumerSig() {
+        if (mAppSecret == null) return "";  // We don't use an app secret for OAuth 2.
+
         MessageDigest m;
         try {
             m = MessageDigest.getInstance("SHA-1");
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
-        m.update(appSecret.getBytes(), 0, appSecret.length());
+        m.update(mAppSecret.getBytes(), 0, mAppSecret.length());
         BigInteger i = new BigInteger(1, m.digest());
         String s = String.format("%1$040X", i);
         return s.substring(32);
@@ -413,12 +509,12 @@ public class AuthActivity extends Activity {
 
         String[] params = {
             "locale", locale.getLanguage()+"_"+locale.getCountry(),
-            "k", appKey,
+            "k", mAppKey,
             "s", getConsumerSig(),
-            "api", apiType,
+            "api", mApiType,
             "state", state};
 
-        String url = RESTUtility.buildURL(webHost, DropboxAPI.VERSION, path, params);
+        String url = RESTUtility.buildURL(mWebHost, DropboxAPI.VERSION, path, params);
 
         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
         startActivity(intent);
@@ -458,11 +554,14 @@ public class AuthActivity extends Activity {
         "7e1f4776b85147be3e295714986c4a9a07183f48ea09ae4d3ea31b88d0016c65b93" +
         "526b9c45f2967c3d28dee1aff5a5b29b9c2c8639"};
 
-    private static String createStateNonce() {
+    private String createStateNonce() {
         final int NONCE_BYTES = 16; // 128 bits of randomness.
         byte randomBytes[] = new byte[NONCE_BYTES];
-        new SecureRandom().nextBytes(randomBytes);
+        getSecureRandom().nextBytes(randomBytes);
         StringBuilder sb = new StringBuilder();
+        if (mAppSecret == null) {
+            sb.append("oauth2:");
+        }
         for (int i = 0; i < NONCE_BYTES; ++i) {
             sb.append(String.format("%02x", (randomBytes[i]&0xff)));
         }
