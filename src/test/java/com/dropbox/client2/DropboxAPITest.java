@@ -25,16 +25,21 @@
 
 package com.dropbox.client2;
 
-import java.io.*;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.List;
-import java.util.Random;
+import java.util.*;
 
-import com.dropbox.client2.exception.DropboxPartialFileException;
-import com.dropbox.client2.session.AccessTokenPair;
-import static org.junit.Assert.*;
+import org.junit.Test;
 
 import com.dropbox.client2.DropboxAPI.Account;
 import com.dropbox.client2.DropboxAPI.DropboxFileInfo;
@@ -44,11 +49,10 @@ import com.dropbox.client2.DropboxAPI.Entry;
 import com.dropbox.client2.DropboxAPI.ThumbFormat;
 import com.dropbox.client2.DropboxAPI.ThumbSize;
 import com.dropbox.client2.exception.DropboxException;
+import com.dropbox.client2.exception.DropboxPartialFileException;
 import com.dropbox.client2.exception.DropboxServerException;
 import com.dropbox.client2.session.AppKeyPair;
-import com.dropbox.client2.session.Session.AccessType;
-import com.dropbox.client2.session.WebAuthSession;
-import org.junit.Test;
+import com.dropbox.client2.session.WebOAuth2Session;
 
 /**
  * Unit test for simple App.
@@ -64,14 +68,14 @@ public class DropboxAPITest {
 
     static {
         try {
-            AppKeyPair consumerTokenPair = new AppKeyPair(System.getProperty("app_key"), System.getProperty("app_secret"));
-            WebAuthSession session = new WebAuthSession(consumerTokenPair, AccessType.APP_FOLDER);
-            session.setAccessTokenPair(new AccessTokenPair(System.getProperty("access_key"), System.getProperty("access_secret")));
-            api = new DropboxAPI<WebAuthSession>(session);
+            AppKeyPair consumerTokenPair = new AppKeyPair("", "");  // Don't need this for OAuth 2
+            WebOAuth2Session session = new WebOAuth2Session(consumerTokenPair, System.getProperty("access_token"));
+            api = new DropboxAPI<WebOAuth2Session>(session);
         } catch (Throwable t) {
             t.printStackTrace();
             assert false : "Total failure trying to start WebAuthSession." + t;
         }
+        java.security.Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
     }
 
     public void assertFile(Entry e, File f, String path){
@@ -179,7 +183,6 @@ public class DropboxAPITest {
 
     @Test
     public void getFile() throws Exception {
-
         assertGetFile(foo, TESTS_DIR + "/getfoo.txt");
         assertGetFile(song, TESTS_DIR + "/getsong.mp3");
         assertGetFile(frog, TESTS_DIR + "/getfrog.jpg");
@@ -207,8 +210,6 @@ public class DropboxAPITest {
         assert info.getFileSize() > 0 : "Thumbnail length 0";
         assert info.getMetadata().bytes > 0 : "Original file size 0";
         assert info.getFileSize() != info.getMetadata().bytes : "Thumbnail equals original file size.";
-
-
     }
 
     @Test
@@ -220,7 +221,48 @@ public class DropboxAPITest {
         assert is != null : "No info returned";
         assert is.getFileInfo().getFileSize() > 0 : "Thumbnail length 0";
         assert is.getFileInfo().getMetadata().bytes > 0 : "Original file size 0";
+    }
 
+    private String createRandomContents(Random rng, int length, String characters) {
+        char[] text = new char[length];
+        for (int i = 0; i < length; i++)
+        {
+            text[i] = characters.charAt(rng.nextInt(characters.length()));
+        }
+        return new String(text);
+    }
+
+    // Only enable this test if you want to test the behavior of skipping. This
+    // was written to test a bug report that came in, but it doesn't look at
+    // this time that this is worthy of testing regularly.
+    //@Test
+    public void skipsCorrectly() throws Exception {
+        String path = TESTS_DIR + "/randomtext.txt";
+
+        // length of file in bytes to generate
+        int length = 1000000;
+        // number of bytes to skip
+        int skipCount = 950000;
+        // number of bytes after the skip offset to use to verify the correctness
+        // of the skip function
+        int bytesToVerify = 300;
+
+        String contents = createRandomContents(new Random(), length, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
+
+        // create input stream from random byte string
+        InputStream fis = new ByteArrayInputStream(contents.getBytes("US-ASCII"));
+
+        // put & get same file
+        api.putFileOverwrite(path, fis, contents.length(), null);
+        DropboxInputStream is = api.getFileStream(path, null);
+
+        // skip bytes
+        long amtSkipped = is.skip(skipCount);
+
+        byte[] outBytes = new byte[bytesToVerify];
+        is.read(outBytes, 0, bytesToVerify);
+
+        assertEquals(new String(outBytes), contents.substring((int)amtSkipped, (int)amtSkipped+bytesToVerify));
     }
 
     public void uploadFileOverwrite(File src, String target) throws Exception{
@@ -231,10 +273,10 @@ public class DropboxAPITest {
         FileInputStream fis = new FileInputStream(src);
         api.putFile(target, fis, src.length(), null, null);
     }
+
     @Test
     public void copy() throws Exception
     {
-
         String fromPath = TESTS_DIR + "/copyFrom.jpg";
         String toPath = TESTS_DIR + "/copyTo.jpg";
         uploadFile(frog, fromPath);
@@ -315,17 +357,22 @@ public class DropboxAPITest {
 
         assertEquals(results.size(), 3);
 
-        assertFile(results.get(0), frog, searchDir + "frog.jpg");
-        assertFile(results.get(1), frog, searchDir + "frog2.jpg");
-        assertFile(results.get(2), frog, searchDir + "subFolder/frog2.jpg");
+        HashSet<String> resultPaths = new HashSet<String>();
+        for (DropboxAPI.Entry e : results) {
+            assertEquals(e.bytes, frog.length());
+            assertEquals(e.isDir, false);
+            resultPaths.add(e.path);
+        }
+        resultPaths.equals(new HashSet<String>(Arrays.asList(
+                searchDir + "frog.jpg",
+                searchDir + "frog2.jpg",
+                searchDir + "subFolder/frog2.jpg")));
 
         results = api.search(searchDir + "subFolder", "jpg", 1000, false);
 
         assertEquals(results.size(), 1);
 
         assertFile(results.get(0), frog, searchDir + "subFolder/frog2.jpg");
-
-
     }
 
 
@@ -348,47 +395,60 @@ public class DropboxAPITest {
         }
         Entry reverted = api.restore(path, revs.get(1).rev);
         assertFile(reverted, frog, path);
-
-
-
-
     }
 
     @Test
-    public void chunkedUploadsPlain() throws Exception{
-        chunkedUploadsTestBase(false);
+    public void chunkedUploadPlain() throws Exception {
+        chunkedUploadsTestBase("/cu1.dat", 10*1024*1024, 10*1024*1024, 4000000, false);
     }
 
-    //@Test
-    public void chunkedUploadsAbort() throws Exception{
-        try {
-            chunkedUploadsTestBase(true);
-            assert false: "No exception WTF?";
-        } catch(DropboxPartialFileException d) {
+    @Test
+    public void chunkedUploadStream() throws Exception {
+        chunkedUploadsTestBase("/cu2.dat", 2*1024*1024, -1, 4000000, false);
+    }
 
+    @Test
+    public void chunkedUploadStreamWithoutLeftover() throws Exception {
+        chunkedUploadsTestBase("/cu3.dat", 2*1024*1024, -1, 1024*1024, false);
+    }
+
+    @Test
+    public void chunkedUploadStreamOverrun() throws Exception {
+    try {
+    chunkedUploadsTestBase("/cu4.dat", 1024*1024, 1024*1024+1, 1024*1024, false);
+    assert false: "Expected IllegalStateException due to insufficient data in input stream";
+    } catch (IllegalStateException e) {
+    }
+    }
+
+    @Test
+    public void chunkedUploadAbort() throws Exception {
+        try {
+            chunkedUploadsTestBase("/cu5.dat", 10*1024*1024, 10*1024*1024, 4000000, true);
+            assert false: "No exception WTF?";
+        } catch (DropboxPartialFileException d) {
         }
     }
 
-    private void chunkedUploadsTestBase(boolean abort) throws Exception{
-        String path = TESTS_DIR + "/chunkedfile.dat";
+    private void chunkedUploadsTestBase(String filename, int dataSizeInBytes, int bytesToUpload, int chunkSize, boolean abort) throws Exception{
+        String path = TESTS_DIR + filename;
         Random r = new Random();
-        int n = 10*1024*1024;
-        byte[] bytes = new byte[n];
+        byte[] bytes = new byte[dataSizeInBytes];
         r.nextBytes(bytes);
         System.out.println("Uploading");
         final boolean[] progressListenerFired = {false};
-        final DropboxAPI.ChunkedUploader uploader = api.getChunkedUploader(new ByteArrayInputStream(bytes), n);
+        final DropboxAPI.ChunkedUploader uploader = api.getChunkedUploader(new ByteArrayInputStream(bytes), bytesToUpload, chunkSize);
         if (abort) {
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                try {
-                    Thread.sleep(2000);
-                    System.out.println("KILLING");
-                    uploader.abort();
-                } catch(Exception e) {
-                    throw new AssertionError(e);
-                }
+                    try {
+                        Thread.sleep(2000);
+                        System.out.println("KILLING");
+                        uploader.abort();
+                    } catch(Exception e) {
+                        throw new AssertionError(e);
+                    }
                 }
             }).start();
         }
@@ -406,22 +466,16 @@ public class DropboxAPITest {
                 if (!uploader.getActive()) {
                     throw e;
                 }
+                throw e;
             }
         }
 
         uploader.finish(path, null);
         DropboxAPI.DropboxInputStream byteStream = api.getFileStream(path, null);
 
-
         byte[] returnedBytes = Util.streamToBytes(byteStream);
         assertTrue(progressListenerFired[0]);
         assertEquals(bytes.length, returnedBytes.length);
         assertArrayEquals(returnedBytes, bytes);
-
     }
-
-
-
 }
-
-

@@ -32,7 +32,6 @@ import junit.framework.TestSuite;
 import com.dropbox.client2.exception.DropboxException;
 import com.dropbox.client2.session.AppKeyPair;
 import com.dropbox.client2.session.RequestTokenPair;
-import com.dropbox.client2.session.Session.AccessType;
 import com.dropbox.client2.session.WebAuthSession;
 import com.dropbox.client2.session.WebAuthSession.WebAuthInfo;
 
@@ -60,6 +59,10 @@ public class SessionTest
         mTestingPassword = "test123";
     }
 
+    static {
+        java.security.Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
+    }
+
     /**
      * @return the suite of tests being tested
      */
@@ -80,7 +83,7 @@ public class SessionTest
 
 
     public void test_session() throws Exception {
-        WebAuthSession session = new WebAuthSession(mConsumerTokenPair, AccessType.DROPBOX);
+        WebAuthSession session = new WebAuthSession(mConsumerTokenPair);
 
         assert session.getAppKeyPair().equals(mConsumerTokenPair);
         assert !session.isLinked() : "Session not linked";
@@ -88,7 +91,7 @@ public class SessionTest
 
     public void test_retrieveRequestToken() throws Exception
     {
-        WebAuthSession session = new WebAuthSession(mConsumerTokenPair, AccessType.DROPBOX);
+        WebAuthSession session = new WebAuthSession(mConsumerTokenPair);
 
         try {
             WebAuthInfo info = session.getAuthInfo("somecallback");
@@ -101,7 +104,7 @@ public class SessionTest
     /*public void test_retrieveAccessToken() throws Exception
     {
         try {
-            WebAuthSession session = new WebAuthSession(mConsumerTokenPair, AccessType.DROPBOX);
+            WebAuthSession session = new WebAuthSession(mConsumerTokenPair);
             WebAuthInfo info = session.getAuthInfo();
 
             Util.authorizeForm(info.url, mTestingUser, mTestingPassword);

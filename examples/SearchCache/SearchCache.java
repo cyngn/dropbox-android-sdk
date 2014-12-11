@@ -1,8 +1,7 @@
 import com.dropbox.client2.exception.DropboxException;
 import com.dropbox.client2.session.Session;
-import com.dropbox.client2.session.WebAuthSession;
+import com.dropbox.client2.session.WebOAuth2Session;
 import com.dropbox.client2.session.AppKeyPair;
-import com.dropbox.client2.session.AccessTokenPair;
 import com.dropbox.client2.DropboxAPI;
 import com.dropbox.client2.DropboxAPI.DeltaEntry;
 
@@ -24,6 +23,10 @@ public class SearchCache
     public static void main(String[] args)
         throws DropboxException
     {
+        // We only need to do this because this is command-line example program.
+        // Android takes care of this for us automatically.
+        java.security.Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
+
         if (args.length == 0) {
             printUsage(System.out);
             throw die();
@@ -57,24 +60,27 @@ public class SearchCache
         }
 
         AppKeyPair appKeyPair = new AppKeyPair(args[1], args[2]);
-        WebAuthSession was = new WebAuthSession(appKeyPair, Session.AccessType.APP_FOLDER);
+        WebOAuth2Session was = new WebOAuth2Session(appKeyPair);
 
         // Make the user log in and authorize us.
-        WebAuthSession.WebAuthInfo info = was.getAuthInfo();
-        System.out.println("1. Go to: " + info.url);
+        System.out.println("1. Go to: " + was.getAuthorizeURL(null, null));
         System.out.println("2. Allow access to this app.");
-        System.out.println("3. Press ENTER.");
+        System.out.println("3. Copy the code given here and press ENTER.");
 
+        StringBuilder key = new StringBuilder();
         try {
-            while (System.in.read() != '\n') {}
+            while (true) {
+                char c = (char)System.in.read();
+                if (c == '\n')
+                    break;
+                key.append(c);
+            }
         }
         catch (IOException ex) {
             throw die("I/O error: " + ex.getMessage());
         }
 
-        // This will fail if the user didn't visit the above URL and hit 'Allow'.
-        was.retrieveWebAccessToken(info.requestTokenPair);
-        AccessTokenPair accessToken = was.getAccessTokenPair();
+        String accessToken = was.retrieveWebAccessToken(key.toString(), null);
         System.out.println("Link successful.");
 
         // Save state
@@ -100,9 +106,9 @@ public class SearchCache
         State state = State.load(STATE_FILE);
 
         // Connect to Dropbox.
-        WebAuthSession session = new WebAuthSession(state.appKey, WebAuthSession.AccessType.APP_FOLDER);
-        session.setAccessTokenPair(state.accessToken);
-        DropboxAPI<?> client = new DropboxAPI<WebAuthSession>(session);
+        WebOAuth2Session session = new WebOAuth2Session(state.appKey);
+        session.setOAuth2AccessToken(state.accessToken);
+        DropboxAPI<?> client = new DropboxAPI<WebOAuth2Session>(session);
 
         int pageNum = 0;
         boolean changed = false;
@@ -336,10 +342,10 @@ public class SearchCache
     public static final class State
     {
         public final AppKeyPair appKey;
-        public final AccessTokenPair accessToken;
+        public final String accessToken;
         public final Content.Folder tree;
 
-        public State(AppKeyPair appKey, AccessTokenPair accessToken, Content.Folder tree)
+        public State(AppKeyPair appKey, String accessToken, Content.Folder tree)
         {
             this.appKey = appKey;
             this.accessToken = accessToken;
@@ -359,10 +365,7 @@ public class SearchCache
             jstate.put("app_key", japp);
 
             // Convert access token
-            JSONArray jaccess = new JSONArray();
-            jaccess.add(accessToken.key);
-            jaccess.add(accessToken.secret);
-            jstate.put("access_token", jaccess);
+            jstate.put("access_token", accessToken);
 
             // Convert tree
             JSONObject jtree = tree.toJson();
@@ -410,8 +413,7 @@ public class SearchCache
                 JsonList japp = jm.get("app_key").expectList();
                 AppKeyPair appKey = new AppKeyPair(japp.get(0).expectString(), japp.get(1).expectString());
 
-                JsonList jaccess = jm.get("access_token").expectList();
-                AccessTokenPair accessToken = new AccessTokenPair(jaccess.get(0).expectString(), jaccess.get(1).expectString());
+                String accessToken = jm.get("access_token").expectString();
 
                 JsonMap jtree = jm.get("tree").expectMap();
                 Content.Folder tree = Content.Folder.fromJson(jtree);

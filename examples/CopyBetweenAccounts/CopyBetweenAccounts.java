@@ -1,8 +1,7 @@
 import com.dropbox.client2.exception.DropboxException;
 import com.dropbox.client2.session.Session;
-import com.dropbox.client2.session.WebAuthSession;
+import com.dropbox.client2.session.WebOAuth2Session;
 import com.dropbox.client2.session.AppKeyPair;
-import com.dropbox.client2.session.AccessTokenPair;
 import com.dropbox.client2.DropboxAPI;
 
 import com.dropbox.client2.jsonextract.*;
@@ -25,6 +24,10 @@ public class CopyBetweenAccounts
     public static void main(String[] args)
         throws DropboxException
     {
+        // We only need to do this because this is command-line example program.
+        // Android takes care of this for us automatically.
+        java.security.Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
+
         if (args.length == 0) {
             printUsage(System.out);
             throw die();
@@ -80,32 +83,39 @@ public class CopyBetweenAccounts
         // Load state.
         State state = State.load(STATE_FILE);
 
-        WebAuthSession was = new WebAuthSession(state.appKey, Session.AccessType.APP_FOLDER);
+        WebOAuth2Session was = new WebOAuth2Session(state.appKey);
 
         // Make the user log in and authorize us.
-        WebAuthSession.WebAuthInfo info = was.getAuthInfo();
-        System.out.println("1. Go to: " + info.url);
+        String url = was.getAuthorizeURL(null, null);
+        System.out.println("1. Go to: " + url);
         System.out.println("2. Allow access to this app.");
-        System.out.println("3. Press ENTER.");
+        System.out.println("3. Copy the code given here and press ENTER.");
 
+        StringBuilder key = new StringBuilder();
         try {
-            while (System.in.read() != '\n') {}
+            while (true) {
+                char c = (char)System.in.read();
+                if (c == '\n')
+                    break;
+                key.append(c);
+            }
         }
         catch (IOException ex) {
             throw die("I/O error: " + ex.getMessage());
         }
 
-        // This will fail if the user didn't visit the above URL and hit 'Allow'.
-        String uid = was.retrieveWebAccessToken(info.requestTokenPair);
-        AccessTokenPair accessToken = was.getAccessTokenPair();
+        String accessToken = was.retrieveWebAccessToken(key.toString(), null);
         System.out.println("Link successful.");
 
-        state.links.put(uid, accessToken);
+        DropboxAPI<?> api = new DropboxAPI<WebOAuth2Session>(was);
+        DropboxAPI.Account acc = api.accountInfo();
+
+        state.links.put(new Long(acc.uid).toString(), accessToken);
         state.save(STATE_FILE);
     }
 
     // ------------------------------------------------------------------------
-    // Link another account.
+    // List available accounts account.
 
     private static void doList(String[] args)
         throws DropboxException
@@ -122,9 +132,9 @@ public class CopyBetweenAccounts
         }
         else {
             System.out.println("[uid: access token]");
-            for (Map.Entry<String,AccessTokenPair> link : state.links.entrySet()) {
-                AccessTokenPair at = link.getValue();
-                System.out.println(link.getKey() + ": " + at.key + " " + at.secret);
+            for (Map.Entry<String, String> link : state.links.entrySet()) {
+                String at = link.getValue();
+                System.out.println(link.getKey() + ": " + at);
             }
         }
     }
@@ -156,23 +166,23 @@ public class CopyBetweenAccounts
             throw die("ERROR: Bad <source>: " + ex.getMessage());
         }
 
-        AccessTokenPair sourceAccess = state.links.get(source.uid);
+        String sourceAccess = state.links.get(source.uid);
         if (sourceAccess == null) {
             throw die("ERROR: <source> refers to UID that isn't linked.");
         }
-        AccessTokenPair targetAccess = state.links.get(target.uid);
+        String targetAccess = state.links.get(target.uid);
         if (targetAccess == null) {
             throw die("ERROR: <target> refers to UID that isn't linked.");
         }
 
         // Connect to the <source> UID and create a copy-ref.
-        WebAuthSession sourceSession = new WebAuthSession(state.appKey, Session.AccessType.DROPBOX, sourceAccess);
-        DropboxAPI<?> sourceClient = new DropboxAPI<WebAuthSession>(sourceSession);
+        WebOAuth2Session sourceSession = new WebOAuth2Session(state.appKey, sourceAccess);
+        DropboxAPI<?> sourceClient = new DropboxAPI<WebOAuth2Session>(sourceSession);
         DropboxAPI.CreatedCopyRef cr = sourceClient.createCopyRef(source.path);
 
         // Connect to the <target> UID and add the target file.
-        WebAuthSession targetSession = new WebAuthSession(state.appKey, Session.AccessType.DROPBOX, targetAccess);
-        DropboxAPI<?> targetClient = new DropboxAPI<WebAuthSession>(targetSession);
+        WebOAuth2Session targetSession = new WebOAuth2Session(state.appKey, targetAccess);
+        DropboxAPI<?> targetClient = new DropboxAPI<WebOAuth2Session>(targetSession);
         targetClient.addFromCopyRef(cr.copyRef, target.path);
 
         System.out.println("Copied.");
@@ -240,7 +250,7 @@ public class CopyBetweenAccounts
     public static final class State
     {
         public final AppKeyPair appKey;
-        public final Map<String,AccessTokenPair> links = new HashMap<String,AccessTokenPair>();
+        public final Map<String, String> links = new HashMap<String, String>();
 
         public State(AppKeyPair appKey)
         {
@@ -259,13 +269,10 @@ public class CopyBetweenAccounts
 
             // Convert 'Link' objects (uid -> access token)
             JSONObject jlinks = new JSONObject();
-            for (Map.Entry<String,AccessTokenPair> link : links.entrySet()) {
+            for (Map.Entry<String, String> link : links.entrySet()) {
                 String uid = link.getKey();
-                AccessTokenPair access = link.getValue();
-                JSONArray jaccess = new JSONArray();
-                jaccess.add(access.key);
-                jaccess.add(access.secret);
-                jlinks.put(uid, jaccess);
+                String accessToken = link.getValue();
+                jlinks.put(uid, accessToken);
             }
             jstate.put("links", jlinks);
 
@@ -309,9 +316,8 @@ public class CopyBetweenAccounts
 
                 JsonMap jlinks = jm.get("links").expectMap();
                 for (Map.Entry<String,JsonThing> jlink : jlinks) {
-                    JsonList jaccess = jlink.getValue().expectList();
-                    AccessTokenPair access = new AccessTokenPair(jaccess.get(0).expectString(), jaccess.get(1).expectString());
-                    state.links.put(jlink.getKey(), access);
+                    String accessToken = jlink.getValue().expectString();
+                    state.links.put(jlink.getKey(), accessToken);
                 }
 
                 return state;
@@ -325,9 +331,9 @@ public class CopyBetweenAccounts
     public static final class Link
     {
         public final String uid;
-        public final AccessTokenPair accessToken;
+        public final String accessToken;
 
-        public Link(String uid, AccessTokenPair accessToken)
+        public Link(String uid, String accessToken)
         {
             this.uid = uid;
             this.accessToken = accessToken;

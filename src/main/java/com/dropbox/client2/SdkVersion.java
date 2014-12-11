@@ -7,7 +7,7 @@ public final class SdkVersion {
 
     /** Returns the SDK version number. */
     public static String get() {
-        return "1.5.4";  // Filled in by build process.
+        return "1.6.2";  // Filled in by build process.
     }
 
     public static void main(String[] args) {

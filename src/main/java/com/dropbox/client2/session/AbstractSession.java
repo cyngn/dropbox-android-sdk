@@ -27,6 +27,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
+import java.security.KeyManagementException;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.UnrecoverableKeyException;
+import java.security.cert.CertificateException;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
@@ -70,6 +75,7 @@ import org.apache.http.protocol.HTTP;
 import org.apache.http.protocol.HttpContext;
 
 import com.dropbox.client2.DropboxAPI;
+import com.dropbox.client2.SecureSSLSocketFactory;
 
 /**
  * Keeps track of a logged in user and contains configuration options for the
@@ -93,13 +99,45 @@ public abstract class AbstractSession implements Session {
 
     private final AccessType accessType;
     private final AppKeyPair appKeyPair;
-    private AccessTokenPair accessTokenPair = null;
+    private AccessTokenPair oauth1AccessToken = null;
+    private String oauth2AccessToken = null;
 
     private HttpClient client = null;
 
     /**
+     * Creates a new session with the given app key and secret.
+     * The session will not be linked because it has no access token pair.
+     */
+    public AbstractSession(AppKeyPair appKeyPair) {
+        this(appKeyPair, (AccessTokenPair) null);
+    }
+
+    /**
+     * Creates a new session with the given app key and secret.
+     * The session will be linked to the account corresponding to the
+     * given OAuth 1 access token pair.
+     */
+    public AbstractSession(AppKeyPair appKeyPair, AccessTokenPair oauth1AccessToken) {
+        this(appKeyPair, AccessType.AUTO, oauth1AccessToken);
+    }
+
+    /**
+     * Creates a new session with the given app key and secret.
+     * The session will be linked to the account corresponding to the
+     * given OAuth 2 access token.
+     */
+    public AbstractSession(AppKeyPair appKeyPair, String oauth2AccessToken) {
+        this(appKeyPair);
+        this.oauth2AccessToken = oauth2AccessToken;
+    }
+
+    /**
      * Creates a new session with the given app key and secret, and access
      * type. The session will not be linked because it has no access token pair.
+     *
+     * @deprecated
+     *    You don't need to specify the access type anymore.  Use
+     *    {@link #AbstractSession(AppKeyPair)}.
      */
     public AbstractSession(AppKeyPair appKeyPair, AccessType type) {
         this(appKeyPair, type, null);
@@ -109,23 +147,34 @@ public abstract class AbstractSession implements Session {
      * Creates a new session with the given app key and secret, and access
      * type. The session will be linked to the account corresponding to the
      * given access token pair.
+     *
+     * @deprecated
+     *    You don't need to specify the access type anymore.  Use
+     *    {@link #AbstractSession(AppKeyPair, AccessTokenPair)}.
      */
     public AbstractSession(AppKeyPair appKeyPair, AccessType type,
-            AccessTokenPair accessTokenPair) {
+            AccessTokenPair oauth1AccessToken) {
         if (appKeyPair == null) throw new IllegalArgumentException("'appKeyPair' must be non-null");
         if (type == null) throw new IllegalArgumentException("'type' must be non-null");
 
         this.appKeyPair = appKeyPair;
         this.accessType = type;
-        this.accessTokenPair = accessTokenPair;
+        this.oauth1AccessToken = oauth1AccessToken;
     }
 
     /**
-     * Links the session with the given access token and secret.
+     * Links the session with the given OAuth 1 access token and secret.
      */
     public void setAccessTokenPair(AccessTokenPair accessTokenPair) {
-        if (accessTokenPair == null) throw new IllegalArgumentException("'accessTokenPair' must be non-null");
-        this.accessTokenPair = accessTokenPair;
+        if (accessTokenPair == null) throw new IllegalArgumentException("'oauth1AccessToken' must be non-null");
+        this.oauth1AccessToken = accessTokenPair;
+        this.oauth2AccessToken = null;  // Clear any OAuth 2 token.
+    }
+
+    public void setOAuth2AccessToken(String oauth2AccessToken) {
+        if (oauth2AccessToken == null) throw new IllegalArgumentException("'oauth2AccessToken' must be non-null");
+        this.oauth2AccessToken = oauth2AccessToken;
+        this.oauth1AccessToken = null;  // Clear any OAuth 1 token.
     }
 
     @Override
@@ -133,12 +182,14 @@ public abstract class AbstractSession implements Session {
         return appKeyPair;
     }
 
-    @Override
     public AccessTokenPair getAccessTokenPair() {
-        return accessTokenPair;
+        return oauth1AccessToken;
     }
 
-    @Override
+    public String getOAuth2AccessToken() {
+        return oauth2AccessToken;
+    }
+
     public AccessType getAccessType() {
         return accessType;
     }
@@ -161,29 +212,33 @@ public abstract class AbstractSession implements Session {
 
     @Override
     public boolean isLinked() {
-        return accessTokenPair != null;
+        return (oauth1AccessToken != null) || (oauth2AccessToken != null);
     }
 
     @Override
     public void unlink() {
-        accessTokenPair = null;
+        oauth1AccessToken = null;
+        oauth2AccessToken = null;
     }
 
     /**
-     * Signs the request by using's OAuth's HTTP header authorization scheme
-     * and the PLAINTEXT signature method.  As such, this should only be used
-     * over secure connections (i.e. HTTPS).  Using this over regular HTTP
-     * connections is completely insecure.
+     * Signs the request using either OAuth 1 or OAuth 2, depending on which
+     * token was set (setAccessTokenPair vs setOAuth2AccessToken).
      *
      * @see Session#sign
      */
     @Override
     public void sign(HttpRequest request) {
-        request.addHeader("Authorization",
-                buildOAuthHeader(this.appKeyPair, this.accessTokenPair));
+        String v;
+        if (oauth2AccessToken != null) {
+            v = "Bearer " + oauth2AccessToken;
+        } else {
+            v = buildOAuth1Header(this.appKeyPair, this.oauth1AccessToken);
+        }
+        request.addHeader("Authorization", v);
     }
 
-    private static String buildOAuthHeader(AppKeyPair appKeyPair,
+    private static String buildOAuth1Header(AppKeyPair appKeyPair,
             AccessTokenPair signingTokenPair) {
         StringBuilder buf = new StringBuilder();
         buf.append("OAuth oauth_version=\"1.0\"");
@@ -254,12 +309,30 @@ public abstract class AbstractSession implements Session {
             });
             ConnManagerParams.setMaxTotalConnections(connParams, 20);
 
+            // Initialize SecureSSLSocketFactory for SSL connections
+            SSLSocketFactory sslSocketFactory = null;
+            try {
+                sslSocketFactory = new SecureSSLSocketFactory();
+            } catch (KeyManagementException e) {
+                throw new RuntimeException(e);
+            } catch (UnrecoverableKeyException e) {
+                throw new RuntimeException(e);
+            } catch (NoSuchAlgorithmException e) {
+                throw new RuntimeException(e);
+            } catch (KeyStoreException e) {
+                throw new RuntimeException(e);
+            } catch (CertificateException e) {
+                throw new RuntimeException(e);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+
             // Set up scheme registry.
             SchemeRegistry schemeRegistry = new SchemeRegistry();
             schemeRegistry.register(
                     new Scheme("http", PlainSocketFactory.getSocketFactory(), 80));
             schemeRegistry.register(
-                    new Scheme("https", SSLSocketFactory.getSocketFactory(), 443));
+                    new Scheme("https", sslSocketFactory, 443));
 
             DBClientConnManager cm = new DBClientConnManager(connParams,
                     schemeRegistry);

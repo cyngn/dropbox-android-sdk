@@ -720,6 +720,14 @@ public class DropboxAPI<SESS_T extends Session> {
     }
 
     /**
+     * Identical to {@link #getChunkedUploader(InputStream, long)}, but
+     * sets length to -1, meaning the entire inputstream will be read.
+     */
+    public ChunkedUploader getChunkedUploader(InputStream is) {
+        return new ChunkedUploader(is, -1);
+    }
+
+    /**
      * Identical to {@link #getChunkedUploader(InputStream, long, int)}, but
      * provides a default chunkSize of 4mb
      */
@@ -732,7 +740,8 @@ public class DropboxAPI<SESS_T extends Session> {
      * file using the chunked upload protocol.
      *
      * @param is An inputstream providing the source of the data to be uploaded
-     * @param length The number of bytes to upload.
+     * @param length The number of bytes to upload. If set to -1, the inputstream is
+     *        read until exhaustion.
      * @param chunkSize The default size of each chunk to be uploaded.
      * @return A ChunkedUploader object which can be used to upload the file to Dropbox.
      */
@@ -776,19 +785,18 @@ public class DropboxAPI<SESS_T extends Session> {
 
         private static final int DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024;  // 4 MB
 
-        private byte[] lastChunk = null;
+        private byte[] chunk;
+        private int bytesInChunkToUpload = 0;
         private InputStream stream;
         private long targetLength;
 
         private boolean active = true;
         private ChunkedUploadRequest lastRequest = null;
 
-        private final int chunkSize;
-
         private ChunkedUploader(InputStream is, long length, int chunkSize) {
             stream = is;
             targetLength = length;
-            this.chunkSize = chunkSize;
+            chunk = new byte[chunkSize];
         }
 
         private ChunkedUploader(InputStream is, long length) {
@@ -869,40 +877,67 @@ public class DropboxAPI<SESS_T extends Session> {
          * @throws DropboxPartialFileException if the request was canceled before completion.
          */
         public void upload(ProgressListener listener) throws DropboxException, IOException {
-            while (offset < targetLength) {
 
-                int nextChunkSize = (int)Math.min(chunkSize, targetLength - offset);
+            // whether we should read from the input stream until EOF
+            boolean readUntilEOF = (targetLength == -1);
 
+            while (true) {
                 ProgressListener adjustedListener = null;
                 if (listener != null) {
                     adjustedListener = new ProgressListener.Adjusted(listener, offset, targetLength);
                 }
 
-                if (lastChunk == null) {
-                    lastChunk = new byte[nextChunkSize];
-                    int bytesRead = stream.read(lastChunk);
-                    if (bytesRead < lastChunk.length) {
-                        throw new IllegalStateException("InputStream ended after " + (offset + bytesRead) + " bytes, expecting " + targetLength + " bytes.");
+                // If there are no bytes in the current chunk to upload, then we prepare
+                // a new chunk of data for the next request. If there are bytes, then the
+                // previous upload must have failed, so we should re-upload it.
+                if (bytesInChunkToUpload == 0) {
+                    // prepare next chunk
+                    int bytesToRead;
+                    if (readUntilEOF) {
+                        bytesToRead = chunk.length;
+                    } else {
+                        // ensure that we read only the target amount from the input stream
+                        bytesToRead = (int)Math.min(chunk.length, targetLength - offset);
+                    }
+
+                    bytesInChunkToUpload = stream.read(chunk, 0, bytesToRead);
+                    if (bytesInChunkToUpload == -1) {
+                        if (readUntilEOF) {
+                            // If a stream ends, we set the targetLength, which has
+                            // up until now been set to -1, to the number of bytes
+                            // that were read from the stream. This mimics the
+                            // behavior of the uploader when the targetLength is
+                            // specified initially.
+                            targetLength = offset;
+                            bytesInChunkToUpload = 0;
+                            break;
+                        } else {
+                            // We're at the end of the stream, but we haven't reached
+                            // the target length yet.
+                            abort();
+                            throw new IllegalStateException("InputStream ended after " + offset + " bytes, expecting " + targetLength + " bytes.");
+                        }
                     }
                 }
+
                 try {
                     synchronized(this) {
                         if(!active) {
                             throw new DropboxPartialFileException(0);
                         }
-                        lastRequest = chunkedUploadRequest(new ByteArrayInputStream(lastChunk), lastChunk.length, adjustedListener, offset, uploadId);
+                        lastRequest = chunkedUploadRequest(new ByteArrayInputStream(chunk), bytesInChunkToUpload, adjustedListener, offset, uploadId);
                     }
 
                     ChunkedUploadResponse resp = lastRequest.upload();
 
-                    this.offset = resp.getOffset();
-                    this.uploadId = resp.getUploadId();
-                    lastChunk = null;
+                    offset = resp.getOffset();
+                    uploadId = resp.getUploadId();
+                    bytesInChunkToUpload = 0;
                 } catch (DropboxServerException e) {
                     if (e.body.fields.containsKey("offset")) {
                         long newOffset = (Long)e.body.fields.get("offset");
                         if (newOffset > offset) {
-                            lastChunk = null;
+                            bytesInChunkToUpload = 0;
                             offset = newOffset;
                         } else {
                             throw e;
@@ -911,10 +946,14 @@ public class DropboxAPI<SESS_T extends Session> {
                         throw e;
                     }
                 }
+
+                if (!readUntilEOF && offset >= targetLength) {
+                    // offset should not exceed targetLength, otherwise we read too much
+                    assert(offset == targetLength);
+                    // we've finished uploading the requested amount of data
+                    break;
+                }
             }
-
-
-
         }
 
         /**

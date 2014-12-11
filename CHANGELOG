@@ -1,3 +1,16 @@
+1.6.2 (2014-10-5)
+---
+Bug fixes
+
+1.6.1 (2014-03-13)
+---
+The OAuth 1 browser auth flow (used when the Dropbox Android app isn't
+installed) didn't work.  This is now fixed.
+
+1.6 (2014-01-29)
+---
+Added OAuth 2 support.  OAuth 1 is still supported.
+
 1.5.4 (2013-03-26)
 ---
 Fix authentication bug on Android
