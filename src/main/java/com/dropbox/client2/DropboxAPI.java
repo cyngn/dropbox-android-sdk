@@ -31,7 +31,6 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.Serializable;
 import java.io.SyncFailedException;
 import java.util.ArrayList;
 import java.util.Date;
@@ -106,26 +105,135 @@ public class DropboxAPI<SESS_T extends Session> {
     }
 
     /**
+     * Information about a team
+     */
+    public static class TeamInfo extends VersionedSerializable {
+
+        private static final long serialVersionUID = 2097522622341535733L;
+
+        /* Returned by getLatestVersion() */
+        private static int MY_VERSION = 1;
+
+        /** Name of a team */
+        public final String name;
+
+        /** Unique id of a team */
+        public final String teamId;
+
+        /**
+         * Creates a TeamInfo from a Map.
+         *
+         * @param map
+         *            a Map that looks like:
+         *  {
+         *    "name": "Acme Inc.",
+         *    "team_id": "dbtid:1234abcd"
+         *  },
+         */
+        protected TeamInfo(Map<String, Object> map) {
+            name = (String) map.get("name");
+            teamId = (String) map.get("team_id");
+        }
+
+        /**
+         * Creates a TeamInfo object from an initial set of values.
+         */
+        protected TeamInfo(String teamId, String name) {
+            this.teamId = teamId;
+            this.name = name;
+        }
+
+        @Override
+        public int getLatestVersion() {
+            return MY_VERSION;
+        }
+    }
+
+    /**
+     * Describes components of a user's name
+     */
+    public static class NameDetails extends VersionedSerializable {
+
+        private static final long serialVersionUID = 2097522622341535734L;
+
+        /* Returned by getLatestVersion() */
+        private static int MY_VERSION = 1;
+
+        public final String givenName;
+        public final String surname;
+        /** User's localized familiar name */
+        public final String familiarName;
+
+        /**
+         * Creates NameDetails from a Map.
+         *
+         * @param map
+         *            a Map that looks like: {"given_name": "Bill", "surname" : "Gates",
+         *            "familiar_name" : "Bill" }
+         */
+        protected NameDetails(Map<String, Object> map) {
+            givenName = (String) map.get("given_name");
+            surname = (String) map.get("surname");
+            familiarName = (String) map.get("familiar_name");
+        }
+
+        /**
+         * Creates NameDetails from an initial set of values.
+         */
+        protected NameDetails(String givenName, String surname, String familiarName) {
+            this.givenName = givenName;
+            this.surname = surname;
+            this.familiarName = familiarName;
+        }
+
+        @Override
+        public int getLatestVersion() {
+            return MY_VERSION;
+        }
+    }
+
+    /**
      * Information about a user's account.
      */
-    public static class Account implements Serializable {
+    public static class Account extends VersionedSerializable {
 
         private static final long serialVersionUID = 2097522622341535732L;
+
+        /* Returned by getLatestVersion() */
+        private static int MY_VERSION = 2;
 
         /** The user's ISO country code. */
         public final String country;
 
-        /** The user's "real" name. */
+        /** Preferred display name for user, e.g. Jack Smith (Dropbox) */
         public final String displayName;
+
+        /** The user's email address. */
+        public final String email;
+
+        /** Whether user's email address is verified. */
+        public final boolean emailVerified;
+
+        /** The user's locale as an IETF language tag */
+        public final String locale;
+
+        /** If true, this account is paired with another account */
+        public final boolean isPaired;
+
+        /** Detailed information about user's name */
+        public final NameDetails nameDetails;
 
         /** The user's quota, in bytes. */
         public final long quota;
 
-        /** The user's quota excluding shared files. */
+        /** The number of bytes that the user has consumed ignoring shared folders */
         public final long quotaNormal;
 
-        /** The user's quota of shared files. */
+        /** The number of bytes that the user has consumed including shared folders */
         public final long quotaShared;
+
+        /** Describes the team a user is on. None if user is not on a team */
+        public final TeamInfo teamInfo;
 
         /** The user's account ID. */
         public final long uid;
@@ -136,23 +244,50 @@ public class DropboxAPI<SESS_T extends Session> {
         /**
          * Creates an account from a Map.
          *
-         * @param map a Map that looks like:
-         * <pre>
+         * @param map
+         *            a Map that looks like:
+         *
          * {"country": "",
-         *  "display_name": "John Q. User",
+         *  "display_name": "John Q. User (Dropbox)",
+         *  "email" : "johnq@user.com",
+         *  "is_paired": false,
          *  "quota_info": {
          *    "shared": 37378890,
          *    "quota": 62277025792,
          *    "normal": 263758550
          *   },
+         *  "team" : None,
          *  "uid": "174"}
-         * </pre>
          */
+
         protected Account(Map<String, Object> map) {
             country = (String) map.get("country");
             displayName = (String) map.get("display_name");
+            email = (String) map.get("email");
+            emailVerified = getFromMapAsBoolean(map, "email_verified");
+
             uid = getFromMapAsLong(map, "uid");
             referralLink = (String) map.get("referral_link");
+            isPaired = getFromMapAsBoolean(map, "is_paired");
+            locale = (String) map.get("locale");
+
+            Object nameDetailsJson = map.get("name_details");
+            if (nameDetailsJson != null && nameDetailsJson instanceof Map) {
+                @SuppressWarnings("unchecked")
+                NameDetails nameDetails = new NameDetails((Map<String, Object>) nameDetailsJson);
+                this.nameDetails = nameDetails;
+            } else {
+                nameDetails = null;
+            }
+
+            Object teamInfoJson = map.get("team");
+            if (teamInfoJson != null && teamInfoJson instanceof Map) {
+                @SuppressWarnings("unchecked")
+                TeamInfo teamInfo = new TeamInfo((Map<String, Object>) teamInfoJson);
+                this.teamInfo = teamInfo;
+            } else {
+                teamInfo = null;
+            }
 
             Object quotaInfo = map.get("quota_info");
             @SuppressWarnings("unchecked")
@@ -165,16 +300,37 @@ public class DropboxAPI<SESS_T extends Session> {
         /**
          * Creates an account object from an initial set of values.
          */
-        protected Account(String country, String displayName,
-                long uid, String referralLink, long quota, long quotaNormal,
-                long quotaShared) {
+        protected Account(String country, String displayName, String email, boolean emailVerified,
+                          long uid, String referralLink, boolean isPaired, String locale,
+                          NameDetails nameInfo, TeamInfo teamInfo, long quota, long quotaNormal,
+                          long quotaShared) {
+
             this.country = country;
             this.displayName = displayName;
+            this.email = email;
+            this.emailVerified = emailVerified;
             this.uid = uid;
             this.referralLink = referralLink;
+            this.isPaired = isPaired;
+            this.locale = locale;
+            this.nameDetails = nameInfo;
+            this.teamInfo = teamInfo;
             this.quota = quota;
             this.quotaNormal = quotaNormal;
             this.quotaShared = quotaShared;
+        }
+
+        /**
+         *
+         * @return If Account is over quota
+         */
+        boolean isOverQuota() {
+            return quotaNormal + quotaShared > quota;
+        }
+
+        @Override
+        public int getLatestVersion() {
+            return MY_VERSION;
         }
     }
 
@@ -225,6 +381,9 @@ public class DropboxAPI<SESS_T extends Session> {
         /** Path to the file from the root. */
         public String path;
 
+        /** Is this file read-only? */
+        public boolean readOnly;
+
         /**
          * Name of the root, usually either "dropbox" or "app_folder".
          */
@@ -273,6 +432,7 @@ public class DropboxAPI<SESS_T extends Session> {
          *    "path": "/Public",
          *    "is_dir": true,
          *    "size": "0 bytes",
+         *    "read_only": false,
          *    "root": "dropbox",
          *    "contents": [
          *    {
@@ -307,6 +467,7 @@ public class DropboxAPI<SESS_T extends Session> {
             modified = (String) map.get("modified");
             clientMtime = (String) map.get("client_mtime");
             path = (String) map.get("path");
+            readOnly = getFromMapAsBoolean(map, "read_only");
             root = (String) map.get("root");
             size = (String) map.get("size");
             mimeType = (String) map.get("mime_type");
@@ -390,7 +551,7 @@ public class DropboxAPI<SESS_T extends Session> {
 
     }
     /**
-     * Contains info describing a downloaded file.
+     * Contains info describing a downloaded file or thumbnail.
      */
     public static final class DropboxFileInfo {
 
@@ -1390,6 +1551,18 @@ public class DropboxAPI<SESS_T extends Session> {
         return new DropboxInputStream(req, response);
     }
 
+    /***
+     * Variant of {@link #putFile(String, InputStream, long, String, boolean, ProgressListener)}
+     * where autoRename is set to True
+     */
+    public Entry putFile(String path, InputStream is, long length,
+            String parentRev, ProgressListener listener)
+            throws DropboxException {
+        UploadRequest request =
+            putFileRequest(path, is, length, parentRev, listener);
+        return request.upload();
+    }
+
     /**
      * Uploads a file to Dropbox. The upload will not overwrite any existing
      * version of the file, unless the latest version on the Dropbox server
@@ -1427,9 +1600,12 @@ public class DropboxAPI<SESS_T extends Session> {
      * @param length the amount of bytes to read from the {@link InputStream}.
      * @param parentRev the rev of the file at which the user started editing
      *         it (obtained from a metadata call), or null if this is a new
-     *         upload. If null, or if it does not match the latest rev on the
-     *         server, a copy of the file will be created and you'll receive
-     *         the new metadata upon executing the request.
+     *         upload. If file already exists and parentRev does not match the latest
+     *         rev on the server, a conflict is present which is resolved by the
+     *         policy described by autoRename.
+     * @param autoRename If False, conflicts produce a DropboxServerException.
+     *          If True, a conflicted copy of the file will be created and the
+     *          returned {@link Entry} will provide the updated path.
      * @param listener an optional {@link ProgressListener} to receive upload
      *         progress updates, or null.
      *
@@ -1453,19 +1629,29 @@ public class DropboxAPI<SESS_T extends Session> {
      *         occurred.
      */
     public Entry putFile(String path, InputStream is, long length,
-            String parentRev, ProgressListener listener)
+            String parentRev, boolean autoRename, ProgressListener listener)
             throws DropboxException {
         UploadRequest request =
-            putFileRequest(path, is, length, parentRev, listener);
+            putFileRequest(path, is, length, parentRev, autoRename, listener);
         return request.upload();
+    }
+
+    /***
+     * Variant of {@link #putFileRequest(String, InputStream, long, String, boolean, ProgressListener)}
+     * where autoRename is set to True
+     */
+    public UploadRequest putFileRequest(String path, InputStream is,
+            long length, String parentRev, ProgressListener listener)
+            throws DropboxException {
+        return putFileRequest(path, is, length, false,
+                parentRev, true, listener);
     }
 
     /**
      * Creates a request to upload a file to Dropbox, which you can then
      * {@code upload()} or {@code abort()}. The upload will not overwrite any
      * existing version of the file, unless the latest version has the same rev
-     * as the parentRev given.  Pass in null if you're expecting this to create
-     * a new file.
+     * as the parentRev given. Pass in null if you're expecting this to create a new file.
      *
      * @param path the full Dropbox path where to put the file, including
      *         directories and filename.
@@ -1473,9 +1659,12 @@ public class DropboxAPI<SESS_T extends Session> {
      * @param length the amount of bytes to read from the {@link InputStream}.
      * @param parentRev the rev of the file at which the user started editing
      *         it (obtained from a metadata call), or null if this is a new
-     *         upload. If null, or if it does not match the latest rev on the
-     *         server, a copy of the file will be created and you'll receive
-     *         the new metadata upon executing the request.
+     *         upload. If file already exists and parentRev does not match the latest
+     *         rev on the server, a conflict is present which is resolved by the
+     *         policy described by autoRename.
+     * @param autoRename If False, conflicts produce a DropboxServerException.
+     *          If True, a conflicted copy of the file will be created and the
+     *          returned {@link Entry} will provide the updated path.
      * @param listener an optional {@link ProgressListener} to receive upload
      *         progress updates, or null.
      *
@@ -1493,10 +1682,10 @@ public class DropboxAPI<SESS_T extends Session> {
      *         occurred.
      */
     public UploadRequest putFileRequest(String path, InputStream is,
-            long length, String parentRev, ProgressListener listener)
+            long length, String parentRev, boolean autoRename, ProgressListener listener)
             throws DropboxException {
         return putFileRequest(path, is, length, false,
-                parentRev, listener);
+                parentRev, autoRename, listener);
     }
 
     /**
@@ -1568,7 +1757,7 @@ public class DropboxAPI<SESS_T extends Session> {
      */
     public UploadRequest putFileOverwriteRequest(String path, InputStream is,
             long length, ProgressListener listener) throws DropboxException {
-        return putFileRequest(path, is, length, true, null, listener);
+        return putFileRequest(path, is, length, true, null, true, listener);
     }
 
     /**
@@ -2142,14 +2331,16 @@ public class DropboxAPI<SESS_T extends Session> {
      * @param overwrite whether to overwrite the file if it already exists. If
      *         true, any existing file will always be overwritten. If false,
      *         files will be overwritten only if the {@code parentRev} matches
-     *         the current rev on the server or otherwise a conflicted copy of
-     *         the file will be created and you will get the new file's
-     *         metadata {@link Entry}.
+     *         the current rev on the server.  Otherwise, there is a conflict,
+     *         which is resolved by the behavior specified by autorename.
      * @param parentRev the rev of the file at which the user started editing
      *         it (obtained from a metadata call), or null if this is a new
      *         upload. If null, or if it does not match the latest rev on the
      *         server, a copy of the file will be created and you'll receive
      *         the new metadata upon executing the request.
+     * @param autoRename If False, conflicts produce a DropboxServerException.
+     *          If True, a conflicted copy of the file will be created and you
+     *          will get the new file's metadata {@link Entry}.
      * @param listener an optional {@link ProgressListener} to receive upload
      *         progress updates, or null.
      *
@@ -2168,7 +2359,7 @@ public class DropboxAPI<SESS_T extends Session> {
      *         occurred.
      */
     private UploadRequest putFileRequest(String path, InputStream is, long length,
-                                         boolean overwrite, String parentRev,
+                                         boolean overwrite, String parentRev, boolean autoRename,
                                          ProgressListener listener) throws DropboxException {
         if (path == null || path.equals("")) {
             throw new IllegalArgumentException("path is null or empty.");
@@ -2189,6 +2380,7 @@ public class DropboxAPI<SESS_T extends Session> {
         String[] params = new String[] {
                 "overwrite", String.valueOf(overwrite),
                 "parent_rev", parentRev,
+                "autorename", String.valueOf(autoRename),
                 "locale", session.getLocale().toString()
         };
 

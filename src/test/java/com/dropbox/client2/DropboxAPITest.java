@@ -35,6 +35,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -46,6 +47,8 @@ import com.dropbox.client2.DropboxAPI.DropboxFileInfo;
 import com.dropbox.client2.DropboxAPI.DropboxInputStream;
 import com.dropbox.client2.DropboxAPI.DropboxLink;
 import com.dropbox.client2.DropboxAPI.Entry;
+import com.dropbox.client2.DropboxAPI.NameDetails;
+import com.dropbox.client2.DropboxAPI.TeamInfo;
 import com.dropbox.client2.DropboxAPI.ThumbFormat;
 import com.dropbox.client2.DropboxAPI.ThumbSize;
 import com.dropbox.client2.exception.DropboxException;
@@ -62,9 +65,9 @@ public class DropboxAPITest {
     static DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
 
     private final static String TESTS_DIR = "/" + dateFormat.format(new Date());
-    private File foo = new File("testfiles", "foo.txt");
-    private File song = new File("testfiles", "dropbox_song.mp3");
-    private File frog = new File("testfiles", "Costa Rican Frog.jpg");
+    private final File foo = new File("testfiles", "foo.txt");
+    private final File song = new File("testfiles", "dropbox_song.mp3");
+    private final File frog = new File("testfiles", "Costa Rican Frog.jpg");
 
     static {
         try {
@@ -93,11 +96,28 @@ public class DropboxAPITest {
         Account info = api.accountInfo();
         assert info.country != null : "No country for account";
         assert info.displayName != null : "No displayName for account";
+        assert info.email != null : "No email for account";
         assert info.quota > 0 : "0 quota in account";
         assert info.quotaNormal > 0 : "0 normal quota in account";
         assert info.referralLink != null : "No referral link for account";
         assert info.uid > 0 : "No uid for account";
+        boolean isOverQuota = info.quotaNormal + info.quotaShared > info.quota;
+        assert info.isOverQuota() == isOverQuota : "IsOverQuota failed";
 
+        TeamInfo teamInfo = info.teamInfo;
+        if (teamInfo != null) {
+            assert teamInfo.name != null : "No team name for account";
+            assert teamInfo.teamId != null : "No team id for account";
+            System.out.println("User is on team " + teamInfo.name);
+        } else {
+            System.out.println("User is not on a team");
+        }
+
+        // name info (English locale assumptions)
+        assert info.locale.equals("en") : "Unexpected locale";
+        NameDetails nameDetails = info.nameDetails;
+        assert nameDetails.givenName.equalsIgnoreCase(nameDetails.familiarName);
+        assert info.displayName.equals(nameDetails.givenName + " " + nameDetails.surname);
     }
 
     // Get metadata for a nonexistent directory
@@ -265,6 +285,52 @@ public class DropboxAPITest {
         assertEquals(new String(outBytes), contents.substring((int)amtSkipped, (int)amtSkipped+bytesToVerify));
     }
 
+    private Entry putRandomFile(String destPath, String parentRev) throws Exception {
+        int len = 10;
+        String data = createRandomContents(new Random(), len,
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
+        InputStream in = new ByteArrayInputStream(data.getBytes("US-ASCII"));
+        Entry ent = api.putFile(destPath, in, len, parentRev, null);
+
+        assertEquals(ent.bytes, len);
+        assertEquals(ent.isDir, false);
+        return ent;
+    }
+
+
+    private Entry putRandomFile(String destPath, String parentRev, boolean autoRename) throws Exception {
+        int len = 10;
+        String data = createRandomContents(new Random(), len,
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
+        InputStream in = new ByteArrayInputStream(data.getBytes("US-ASCII"));
+        return api.putFile(destPath, in, len, parentRev, autoRename, null);
+    }
+
+    @Test
+    public void testConflict() throws Exception {
+        String fname = TESTS_DIR + "/psingle.txt";
+        Entry baseres = putRandomFile(fname, null);
+        assert baseres.path.equals(fname) : ("unexpected changed file " + baseres.path + " " + fname);
+
+        // auto rename
+        Entry res = putRandomFile(fname, null);
+        assert !res.path.equals(fname) : "unexpected same file!";
+
+        // ditto
+        res = putRandomFile(fname, null, true);
+        assert !res.path.equals(fname) : "unexpected same file!";
+
+        // blow up
+        try {
+            putRandomFile(fname, null, false);
+            assert false : "Conflict should have been raised";
+        } catch (DropboxServerException e) {
+            if (e.error != DropboxServerException._409_CONFLICT) {
+                assert false: "Unexpected Dropbox Server Error: " + e.toString();
+            }
+        }
+    }
+
     public void uploadFileOverwrite(File src, String target) throws Exception{
         FileInputStream fis = new FileInputStream(src);
         api.putFileOverwrite(target, fis, src.length(), null);
@@ -414,18 +480,18 @@ public class DropboxAPITest {
 
     @Test
     public void chunkedUploadStreamOverrun() throws Exception {
-    try {
-    chunkedUploadsTestBase("/cu4.dat", 1024*1024, 1024*1024+1, 1024*1024, false);
-    assert false: "Expected IllegalStateException due to insufficient data in input stream";
-    } catch (IllegalStateException e) {
-    }
+        try {
+            chunkedUploadsTestBase("/cu4.dat", 1024 * 1024, 1024 * 1024 + 1, 1024 * 1024, false);
+            assert false : "Expected IllegalStateException due to insufficient data in input stream";
+        } catch (IllegalStateException e) {
+        }
     }
 
     @Test
     public void chunkedUploadAbort() throws Exception {
         try {
             chunkedUploadsTestBase("/cu5.dat", 10*1024*1024, 10*1024*1024, 4000000, true);
-            assert false: "No exception WTF?";
+            assert false: "No exception???";
         } catch (DropboxPartialFileException d) {
         }
     }

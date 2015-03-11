@@ -1,4 +1,13 @@
-1.6.2 (2014-10-5)
+1.6.3 (2015-1-9)
+---
+DropboxAPI.accountInfo: New fields: teamInfo, email, locale, isPaired.
+DropboxAPI.Entry: New field: readOnly.
+DropboxAPI.putFile: New option: autoRename.
+AndroidAuthSession: New options: desiredUid, alreadyAuthedUids.
+Fixed crash for when restricted profile blocks web browser launch.
+Add VersionedSerializable base class, which helps detect stale data.
+
+1.6.2 (2014-12-5)
 ---
 Bug fixes
 

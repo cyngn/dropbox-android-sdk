@@ -88,7 +88,7 @@ public class DownloadRandomPicture extends AsyncTask<Void, Long, Boolean> {
 
         mDialog = new ProgressDialog(context);
         mDialog.setMessage("Downloading Image");
-        mDialog.setButton("Cancel", new OnClickListener() {
+        mDialog.setButton(ProgressDialog.BUTTON_POSITIVE, "Cancel", new OnClickListener() {
             public void onClick(DialogInterface dialog, int which) {
                 mCanceled = true;
                 mErrorMsg = "Canceled";

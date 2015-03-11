@@ -3,7 +3,7 @@ out_dir="bytecode"
 main_class="$1" ; shift
 
 cp=""
-for jar in "../../lib/"*.jar; do
+for jar in "../../lib/"*.jar "../../lib/test/"*.jar; do
     cp="$cp:$jar"
 done
 

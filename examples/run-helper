@@ -8,7 +8,7 @@ if [ ! -d "$out_dir" ]; then
 fi
 
 cp="$out_dir"
-for jar in "../../lib/"*.jar; do
+for jar in "../../lib/"*.jar "../../lib/test/"*.jar; do
     cp="$cp:$jar"
 done
 

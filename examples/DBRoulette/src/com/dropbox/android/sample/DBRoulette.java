@@ -29,6 +29,7 @@ import java.io.File;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Locale;
 
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
@@ -151,7 +152,7 @@ public class DBRoulette extends Activity {
                 // MediaStore.Images.Media.EXTERNAL_CONTENT_URI isn't working right.
 
                 Date date = new Date();
-                DateFormat df = new SimpleDateFormat("yyyy-MM-dd-kk-mm-ss");
+                DateFormat df = new SimpleDateFormat("yyyy-MM-dd-kk-mm-ss", Locale.US);
 
                 String newPicFile = df.format(date) + ".jpg";
                 String outPath = new File(Environment.getExternalStorageDirectory(), newPicFile).getPath();

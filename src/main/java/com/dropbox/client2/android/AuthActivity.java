@@ -9,6 +9,7 @@ import java.util.Locale;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
@@ -20,6 +21,8 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.Signature;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import com.dropbox.client2.DropboxAPI;
@@ -86,6 +89,18 @@ public class AuthActivity extends Activity {
     public static final String EXTRA_AUTH_STATE = "AUTH_STATE";
 
     /**
+     * Used for internal authentication. Allows app to request a specific UID to auth against
+     * You won't ever have to use this.
+     */
+    public static final String EXTRA_DESIRED_UID = "DESIRED_UID";
+
+    /**
+     * Used for internal authentication. Allows app to request array of UIDs that should not be auth'd
+     * You won't ever have to use this.
+     */
+    public static final String EXTRA_ALREADY_AUTHED_UIDS = "ALREADY_AUTHED_UIDS";
+
+    /**
      * The Android action which the official Dropbox app will accept to
      * authenticate a user. You won't ever have to use this.
      */
@@ -145,6 +160,8 @@ public class AuthActivity extends Activity {
     private static String sAppSecret;
     private static String sWebHost = DEFAULT_WEB_HOST;
     private static String sApiType;
+    private static String sDesiredUid;
+    private static String[] sAlreadyAuthedUids;
 
     // These instance variables need not be stored in savedInstanceState as onNewIntent()
     // does not read them.
@@ -152,24 +169,32 @@ public class AuthActivity extends Activity {
     private String mAppSecret;
     private String mWebHost;
     private String mApiType;
+    private String mDesiredUid;
+    private String[] mAlreadyAuthedUids;
 
     // Stored in savedInstanceState to track an ongoing auth attempt, which
     // must include a locally-generated nonce in the response.
     private String mAuthStateNonce = null;
 
+    private boolean mActivityDispatchHandlerPosted = false;
+
     /**
      * Set static authentication parameters
      */
-    static void setAuthParams(String appKey, String appSecret) {
-        setAuthParams(appKey, appSecret, null, null);
+    static void setAuthParams(String appKey, String appSecret, String desiredUid,
+                              String[] alreadyAuthedUids) {
+        setAuthParams(appKey, appSecret, desiredUid, alreadyAuthedUids, null, null);
     }
 
     /**
      * Set static authentication parameters
      */
-    static void setAuthParams(String appKey, String appSecret, String webHost, String apiType) {
+    static void setAuthParams(String appKey, String appSecret, String desiredUid,
+                              String[] alreadyAuthedUids, String webHost, String apiType) {
         sAppKey = appKey;
         sAppSecret = appSecret;
+        sDesiredUid = desiredUid;
+        sAlreadyAuthedUids = (alreadyAuthedUids != null) ? alreadyAuthedUids : new String[0];
         sWebHost = (webHost != null) ? webHost : DEFAULT_WEB_HOST;
         sApiType = apiType;
     }
@@ -192,7 +217,7 @@ public class AuthActivity extends Activity {
                                     String webHost, String apiType) {
         if (appKey == null) throw new IllegalArgumentException("'appKey' can't be null");
         if (appSecret == null) throw new IllegalArgumentException("'appSecret' can't be null");
-        setAuthParams(appKey, appSecret, webHost, apiType);
+        setAuthParams(appKey, appSecret, null, null, webHost, apiType);
         return new Intent(context, AuthActivity.class);
     }
 
@@ -210,7 +235,7 @@ public class AuthActivity extends Activity {
     public static Intent makeOAuth2Intent(Context context, String appKey, String webHost,
                                           String apiType) {
         if (appKey == null) throw new IllegalArgumentException("'appKey' can't be null");
-        setAuthParams(appKey, null, webHost, apiType);
+        setAuthParams(appKey, null, null, null, webHost, apiType);
         return new Intent(context, AuthActivity.class);
     }
 
@@ -326,11 +351,13 @@ public class AuthActivity extends Activity {
             mAppSecret = sAppSecret;
             mWebHost = sWebHost;
             mApiType = sApiType;
+            mDesiredUid = sDesiredUid;
+            mAlreadyAuthedUids = sAlreadyAuthedUids;
         } else {
             mAuthStateNonce = savedInstanceState.getString(SIS_KEY_AUTH_STATE_NONCE);
         }
 
-        setAuthParams(null, null);
+        setAuthParams(null, null, null, null);
         setTheme(android.R.style.Theme_Translucent_NoTitleBar);
 
         super.onCreate(savedInstanceState);
@@ -341,6 +368,17 @@ public class AuthActivity extends Activity {
         super.onSaveInstanceState(outState);
         outState.putString(SIS_KEY_AUTH_STATE_NONCE, mAuthStateNonce);
     }
+
+    /**
+     * @return Intent to auth with official app
+     * Extras should be filled in by callee
+     */
+    private static Intent getOfficialAuthIntent() {
+        Intent authIntent = new Intent(ACTION_AUTHENTICATE_V2);
+        authIntent.setPackage("com.dropbox.android");
+        return authIntent;
+    }
+
 
     @Override
     protected void onResume() {
@@ -361,32 +399,58 @@ public class AuthActivity extends Activity {
 
         result = null;
 
+        if (mActivityDispatchHandlerPosted) {
+            Log.w(TAG, "onResume called again before Handler run");
+            return;
+        }
+
         // Random entropy passed through auth makes sure we don't accept a
         // response which didn't come from our request.  Each random
         // value is only ever used once.
-        String state = createStateNonce();
+        final String state = createStateNonce();
 
         // Create intent to auth with official app.
-        Intent officialIntent = new Intent();
-        officialIntent.setPackage("com.dropbox.android");
-        officialIntent.setAction(ACTION_AUTHENTICATE_V2);
-        officialIntent.putExtra(EXTRA_CONSUMER_KEY, mAppKey);
-        officialIntent.putExtra(EXTRA_CONSUMER_SIG, getConsumerSig());
-        officialIntent.putExtra(EXTRA_CALLING_PACKAGE, getPackageName());
-        officialIntent.putExtra(EXTRA_CALLING_CLASS, getClass().getName());
-        officialIntent.putExtra(EXTRA_AUTH_STATE, state);
+        final Intent officialAuthIntent = getOfficialAuthIntent();
+        officialAuthIntent.putExtra(EXTRA_CONSUMER_KEY, mAppKey);
+        officialAuthIntent.putExtra(EXTRA_CONSUMER_SIG, getConsumerSig());
+        officialAuthIntent.putExtra(EXTRA_DESIRED_UID, mDesiredUid);
+        officialAuthIntent.putExtra(EXTRA_ALREADY_AUTHED_UIDS, mAlreadyAuthedUids);
+        officialAuthIntent.putExtra(EXTRA_CALLING_PACKAGE, getPackageName());
+        officialAuthIntent.putExtra(EXTRA_CALLING_CLASS, getClass().getName());
+        officialAuthIntent.putExtra(EXTRA_AUTH_STATE, state);
 
-        // Auth with official app, or fall back to web.
-        if (hasDropboxApp(officialIntent)) {
-            startActivity(officialIntent);
-        } else {
-            startWebAuth(state);
-        }
+        /*
+         * An Android bug exists where onResume may be called twice in rapid succession.
+         * As mAuthNonceState would already be set at start of the second onResume, auth would fail.
+         * Empirical research has found that posting the remainder of the auth logic to a handler
+         * mitigates the issue by delaying remainder of auth logic to after the
+         * previously posted onResume.
+         */
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            public void run() {
 
-        // Save state that indicates we started a request, only after
-        // we started one successfully.
-        mAuthStateNonce = state;
+                Log.d(TAG, "running startActivity in handler");
+                try {
+                    // Auth with official app, or fall back to web.
+                    if (hasDropboxApp(officialAuthIntent)) {
+                        startActivity(officialAuthIntent);
+                    } else {
+                        startWebAuth(state);
+                    }
+                } catch (ActivityNotFoundException e) {
+                    Log.e(TAG, "Could not launch intent. User may have restricted profile", e);
+                    finish();
+                    return;
+                }
+                // Save state that indicates we started a request, only after
+                // we started one successfully.
+                mAuthStateNonce = state;
+            }
+        });
+
+        mActivityDispatchHandlerPosted = true;
     }
+
 
     @Override
     protected void onNewIntent(Intent intent) {
@@ -507,9 +571,15 @@ public class AuthActivity extends Activity {
         String path = "/connect";
         Locale locale = Locale.getDefault();
 
+        // Web Auth currently does not support desiredUid and only one alreadyAuthUid (param n).
+        // We use first alreadyAuthUid arbitrarily.
+        // Note that the API treats alreadyAuthUid of 0 and not present equivalently.
+        String alreadyAuthedUid = (mAlreadyAuthedUids.length > 0) ? mAlreadyAuthedUids[0] : "0";
+
         String[] params = {
             "locale", locale.getLanguage()+"_"+locale.getCountry(),
             "k", mAppKey,
+            "n", alreadyAuthedUid,
             "s", getConsumerSig(),
             "api", mApiType,
             "state", state};

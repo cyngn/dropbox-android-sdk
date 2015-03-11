@@ -10,8 +10,6 @@
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="library" scope="PROVIDED" name="android" level="project" />
     <orderEntry type="library" scope="TEST" name="test" level="project" />
-    <orderEntry type="library" scope="PROVIDED" name="bcprov-jdk16-146" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="json_simple-1.1" level="project" />
   </component>
 </module>
-

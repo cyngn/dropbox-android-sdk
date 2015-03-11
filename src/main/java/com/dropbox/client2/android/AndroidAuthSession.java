@@ -9,6 +9,8 @@ import com.dropbox.client2.session.AbstractSession;
 import com.dropbox.client2.session.AccessTokenPair;
 import com.dropbox.client2.session.AppKeyPair;
 
+import java.util.Arrays;
+
 /**
  * Keeps track of a logged in user and contains configuration options for the
  * {@link DropboxAPI}. Has methods specific to Android for authenticating
@@ -101,23 +103,84 @@ public class AndroidAuthSession extends AbstractSession {
      * will log in and allow your app access.
      *
      * @param context the {@link Context} which to use to launch the
-     *         Dropbox authentication activity. This will typically be an
-     *         {@link Activity} and the user will be taken back to that
-     *         activity after authentication is complete (i.e., your activity
-     *         will receive an {@code onResume()}).
+     *                Dropbox authentication activity. This will typically be an
+     *                {@link Activity} and the user will be taken back to that
+     *                activity after authentication is complete (i.e., your activity
+     *                will receive an {@code onResume()}).
      *
-     * @throws IllegalStateException if you have not correctly set up the
-     *         AuthActivity in your manifest, meaning that the Dropbox app will
-     *         not be able to redirect back to your app after auth.
+     * @throws IllegalStateException if you have not correctly set up the AuthActivity in your
+     *                               manifest, meaning that the Dropbox app will
+     *                               not be able to redirect back to your app after auth.
      */
     public void startOAuth2Authentication(Context context) {
+        startOAuth2Authentication(context, null);
+    }
+
+    /**
+     * Starts the Dropbox authentication process by launching an external app
+     * (either the Dropbox app if available or a web browser) where the user
+     * will log in and allow your app access.
+     * <p/>
+     * This variant should be used when app has previously authenticated against other users.
+     *
+     * @param context           the {@link Context} which to use to launch the
+     *                          Dropbox authentication activity. This will typically be an
+     *                          {@link Activity} and the user will be taken back to that
+     *                          activity after authentication is complete (i.e., your activity
+     *                          will receive an {@code onResume()}).
+     * @param alreadyAuthedUids An array of any other user IDs currently authenticated with this
+     *                          app. This parameter may be null if no user IDs are previously
+     *                          authenticated. The authentication screen will encourage the user to
+     *                          not authorize these user accounts. (Note that the user may still
+     *                          authorize the accounts.)
+     *
+     * @throws IllegalStateException if you have not correctly set up the AuthActivity in your
+     *                               manifest, meaning that the Dropbox app will
+     *                               not be able to redirect back to your app after auth.
+     */
+    public void startOAuth2Authentication(Context context,
+                                          String[] alreadyAuthedUids) {
+        startOAuth2Authentication(context, null, alreadyAuthedUids);
+    }
+
+    /**
+     * Starts the Dropbox authentication process by launching an external app
+     * (either the Dropbox app if available or a web browser) where the user
+     * will log in and allow your app access.
+     * <p/>
+     * This variant should be used when app wishes to authenticate a specific uid.
+     *
+     * @param context           the {@link Context} which to use to launch the
+     *                          Dropbox authentication activity. This will typically be an
+     *                          {@link Activity} and the user will be taken back to that
+     *                          activity after authentication is complete (i.e., your activity
+     *                          will receive an {@code onResume()}).
+     * @param desiredUid        Encourage the user to authenticate the account defined by this user
+     *                          ID. (Note that the user still can authenticate other accounts.)
+     *                          This parameter may be null if no specific user ID is desired.
+     * @param alreadyAuthedUids An array of any other user IDs currently authenticated with this
+     *                          app. This parameter may be null if no user IDs are previously
+     *                          authenticated. The authentication screen will encourage the user to
+     *                          not authorize these user accounts. (Note that the user may still
+     *                          authorize the accounts.)
+     * @throws IllegalStateException if you have not correctly set up the
+     *                               AuthActivity in your manifest, meaning that the Dropbox app will
+     *                               not be able to redirect back to your app after auth.
+     */
+    public void startOAuth2Authentication(Context context, String desiredUid,
+                                          String[] alreadyAuthedUids) {
+
         AppKeyPair appKeyPair = getAppKeyPair();
         if (!AuthActivity.checkAppBeforeAuth(context, appKeyPair.key, true /*alertUser*/)) {
             return;
         }
 
+        if (alreadyAuthedUids != null && Arrays.asList(alreadyAuthedUids).contains(desiredUid)) {
+            throw new IllegalArgumentException("desiredUid cannot be present in alreadyAuthedUids");
+        }
+
         // Start Dropbox auth activity.
-        AuthActivity.setAuthParams(appKeyPair.key, null);
+        AuthActivity.setAuthParams(appKeyPair.key, null, desiredUid, alreadyAuthedUids);
         Intent intent = new Intent(context, AuthActivity.class);
         if (!(context instanceof Activity)) {
             // If starting the intent outside of an Activity, must include
@@ -152,7 +215,7 @@ public class AndroidAuthSession extends AbstractSession {
         }
 
         // Start Dropbox auth activity.
-        AuthActivity.setAuthParams(appKeyPair.key, appKeyPair.secret);
+        AuthActivity.setAuthParams(appKeyPair.key, appKeyPair.secret, null, null);
         Intent intent = new Intent(context, AuthActivity.class);
         if (!(context instanceof Activity)) {
             // If starting the intent outside of an Activity, must include
