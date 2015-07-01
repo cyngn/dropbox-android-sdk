@@ -232,7 +232,11 @@ public class AndroidAuthSession extends AbstractSession {
      * errors, and improper setup from within your app.
      */
     public boolean authenticationSuccessful() {
-        Intent data = AuthActivity.result;
+        return authenticationSuccessful(null);
+    }
+
+    public boolean authenticationSuccessful(Intent intent) {
+        Intent data = intent == null ? AuthActivity.result : intent;
 
         if (data == null) {
             return false;
@@ -251,6 +255,8 @@ public class AndroidAuthSession extends AbstractSession {
         return false;
     }
 
+
+
     /**
      * Sets up a user's access token and secret in this session when you return
      * to your activity from the Dropbox authentication process. Should be
@@ -263,7 +269,11 @@ public class AndroidAuthSession extends AbstractSession {
      *         to this call (check with {@link #authenticationSuccessful()}.
      */
     public String finishAuthentication() throws IllegalStateException {
-        Intent data = AuthActivity.result;
+        return finishAuthentication(null);
+    }
+
+    public String finishAuthentication(Intent intent) throws IllegalStateException {
+        Intent data = intent == null ? AuthActivity.result : intent;
 
         if (data == null) {
             throw new IllegalStateException();
